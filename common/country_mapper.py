@@ -50,6 +50,21 @@ _CUSTOM_MAPPINGS: Dict[str, str] = {
     # UAE
     "uae": "United Arab Emirates",
 
+    # Dataset-specific messy names
+    "soviet union": "Russian Federation",
+    "congo, dr": "Congo, The Democratic Republic of the",
+    "congo, republic": "Republic of the Congo",
+    "cote d'ivoire": "Côte d'Ivoire",
+    "turkiye": "Turkey",
+    "korea, south": "South Korea",
+    "korea, north": "North Korea",
+    "cape verde": "Cabo Verde",
+    "czech republic": "Czechia",
+    "north macedonia": "North Macedonia",
+    "myanmar": "Myanmar",
+    "taiwan": "Taiwan",
+    "kosovo": "Kosovo",
+
     # EU (not in pycountry)
     "eu": "European Union",
 }

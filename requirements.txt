@@ -1,8 +1,9 @@
+pandas
+openpyxl
 neo4j
-python-dotenv
-pycountry
-
-# upcoming modules
 fastapi
 uvicorn
-pandas
+python-dotenv
+pycountry
+requests
+feedparser
