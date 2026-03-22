@@ -117,6 +117,118 @@ def get_top_central_countries(limit: int = 20) -> List[Dict[str, Any]]:
         conn.close()
 
 
+def get_country_voting_alignment(
+    country_name: str,
+    year: int | None = None,
+) -> List[Dict[str, Any]]:
+    """
+    Returns top 10 countries most aligned with given country
+    based on UN General Assembly voting similarity.
+
+    If year is provided filter by that specific year.
+    If year is None return most recent year available.
+
+    source filter: r.source = "UNGA"
+    """
+    conn = Neo4jConnection()
+    try:
+        if year is None:
+            return conn.run_query(
+                """
+                MATCH (a:Country {name: $name})-[r:ALIGNED_WITH]->(b:Country)
+                WHERE r.source = "UNGA"
+                WITH a, b, r
+                ORDER BY r.year DESC, r.vote_similarity DESC
+                WITH a, b, head(collect(r)) AS latest
+                RETURN b.name AS country,
+                       latest.vote_similarity AS vote_similarity,
+                       latest.year AS year,
+                       latest.agreements AS agreements,
+                       latest.total_votes AS total_votes
+                ORDER BY vote_similarity DESC
+                LIMIT 10
+                """,
+                {"name": country_name},
+            )
+        return conn.run_query(
+            """
+            MATCH (a:Country {name: $name})-[r:ALIGNED_WITH]->(b:Country)
+            WHERE r.source = "UNGA"
+            AND r.year = $year
+            RETURN b.name AS country,
+                   r.vote_similarity AS vote_similarity,
+                   r.year AS year,
+                   r.agreements AS agreements,
+                   r.total_votes AS total_votes
+            ORDER BY vote_similarity DESC
+            LIMIT 10
+            """,
+            {"name": country_name, "year": year},
+        )
+    finally:
+        conn.close()
+
+
+def get_voting_blocs(
+    year: int | None = None,
+    min_similarity: float = 0.85,
+) -> List[Dict[str, Any]]:
+    """
+    Returns country pairs with very high UN voting similarity.
+
+    Default min_similarity = 0.85 meaning countries that voted
+    the same way on at least 85% of resolutions they both
+    participated in.
+
+    If year provided filter by that year.
+    If year is None return latest year available.
+
+    source filter: r.source = "UNGA"
+    """
+    conn = Neo4jConnection()
+    try:
+        if year is None:
+            return conn.run_query(
+                """
+                MATCH (a:Country)-[r:ALIGNED_WITH]->(b:Country)
+                WHERE r.source = "UNGA"
+                AND r.vote_similarity >= $min_similarity
+                WITH a, b, r
+                ORDER BY r.year DESC
+                WITH a, b, head(collect(r)) AS latest
+                WHERE latest.vote_similarity >= $min_similarity
+                RETURN a.name AS country_a,
+                       b.name AS country_b,
+                       latest.vote_similarity AS vote_similarity,
+                       latest.year AS year,
+                       latest.agreements AS agreements,
+                       latest.total_votes AS total_votes
+                ORDER BY vote_similarity DESC
+                LIMIT 50
+                """,
+                {"min_similarity": min_similarity},
+            )
+        return conn.run_query(
+            """
+            MATCH (a:Country)-[r:ALIGNED_WITH]->(b:Country)
+            WHERE r.source = "UNGA"
+            AND r.vote_similarity >= $min_similarity
+            AND r.year = $year
+            RETURN a.name AS country_a,
+                   b.name AS country_b,
+                   r.vote_similarity AS vote_similarity,
+                   r.year AS year,
+                   r.agreements AS agreements,
+                   r.total_votes AS total_votes
+            ORDER BY vote_similarity DESC
+            LIMIT 50
+            """,
+            {"min_similarity": min_similarity, "year": year},
+        )
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     test_country = "India"
 
@@ -142,3 +254,23 @@ if __name__ == "__main__":
     top = get_top_central_countries(limit=20)
     for i, row in enumerate(top, 1):
         print(f"  {i}. {row['country']}: {row['centrality']:.6f}")
+
+    print("\n=== India Voting Alignment (latest year) ===")
+    results = get_country_voting_alignment("India")
+    for r in results:
+        print(f"  {r['country']}: {r['vote_similarity']} ({r['year']})")
+
+    print("\n=== India Voting Alignment (2024) ===")
+    results = get_country_voting_alignment("India", year=2024)
+    for r in results:
+        print(f"  {r['country']}: {r['vote_similarity']}")
+
+    print("\n=== Tight Voting Blocs (>= 0.85 similarity) ===")
+    blocs = get_voting_blocs(min_similarity=0.85)
+    for b in blocs[:10]:
+        print(f"  {b['country_a']} — {b['country_b']}: {b['vote_similarity']}")
+
+    print("\n=== Very Tight Blocs (>= 0.95 similarity) ===")
+    blocs = get_voting_blocs(min_similarity=0.95)
+    for b in blocs:
+        print(f"  {b['country_a']} — {b['country_b']}: {b['vote_similarity']}")

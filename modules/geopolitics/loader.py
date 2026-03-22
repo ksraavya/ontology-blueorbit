@@ -1,4 +1,4 @@
-"""Load V-Dem and GDELT geopolitics data."""
+"""Load V-Dem, GDELT, and UNGA geopolitics data."""
 from __future__ import annotations
 import sys
 sys.path.insert(0, '.')
@@ -97,10 +97,53 @@ def load_gdelt(folder: str = "data/raw/gdelt/") -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+def load_unga(path: str = "data/raw/unga/unga_votes_filtered.csv") -> pd.DataFrame:
+    """Load filtered UNGA voting data.
+
+    The CSV has these columns:
+    - ms_code: 3-letter ISO country code (AFG, IND, USA)
+    - ms_name: country name in uppercase (AFGHANISTAN)
+    - ms_vote: Y, N, or A (Yes, No, Abstain)
+    - resolution: resolution ID (A/RES/58/20)
+    - year: integer year (2010, 2023 etc)
+
+    Args:
+        path: Path to the filtered UNGA votes CSV.
+
+    Returns:
+        DataFrame with all columns from the CSV.
+
+    Raises:
+        FileNotFoundError: If the CSV file does not exist.
+    """
+    try:
+        df = pd.read_csv(path)
+    except FileNotFoundError as e:
+        raise FileNotFoundError(
+            f"UNGA file not found: {path}. Please ensure the file exists."
+        ) from e
+
+    n_rows = len(df)
+    n_countries = df["ms_code"].nunique()
+    n_resolutions = df["resolution"].nunique()
+    year_min = int(df["year"].min())
+    year_max = int(df["year"].max())
+
+    print(f"UNGA: loaded {n_rows} rows")
+    print(f"UNGA: {n_countries} unique countries")
+    print(f"UNGA: {n_resolutions} unique resolutions")
+    print(f"UNGA: year range {year_min}-{year_max}")
+
+    return df
+
+
 if __name__ == "__main__":
     df_vdem = load_vdem()
     df_gdelt = load_gdelt()
+    df_unga = load_unga()
     print(df_vdem.head())
     print(df_vdem.dtypes)
     print(df_gdelt.head())
     print(df_gdelt.dtypes)
+    print(df_unga.head())
+    print(df_unga.dtypes)

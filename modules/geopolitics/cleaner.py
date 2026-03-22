@@ -1,4 +1,4 @@
-"""Clean V-Dem and GDELT geopolitics data for downstream use."""
+"""Clean V-Dem, GDELT, and UNGA geopolitics data for downstream use."""
 from __future__ import annotations
 
 import sys
@@ -88,8 +88,44 @@ def clean_gdelt(df: pd.DataFrame) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+def clean_unga(df: pd.DataFrame) -> pd.DataFrame:
+    """Clean UNGA voting data.
+
+    Converts 3-letter ISO codes to full country names, normalizes entities,
+    keeps only Y/N/A votes, and drops invalid rows.
+    Output columns: country, ms_vote, resolution, year.
+
+    Args:
+        df: Raw UNGA DataFrame with ms_code, ms_name, ms_vote, resolution, year.
+
+    Returns:
+        Cleaned DataFrame with country, ms_vote, resolution, year.
+    """
+    df = df.copy()
+    df["country"] = df["ms_code"].apply(code_to_name)
+    df = df.drop(columns=["ms_code", "ms_name"])
+    df["country"] = df["country"].apply(
+        lambda x: normalize_entity(x, entity_type="country") if isinstance(x, str) else None
+    )
+    df["year"] = df["year"].astype(int)
+    df = df[df["ms_vote"].astype(str).str.strip().isin(["Y", "N", "A"])]
+    df = df.dropna(subset=["country"])
+    df = df[df["country"].astype(str).str.strip() != ""]
+    df = df.dropna(subset=["resolution"])
+    res_str = df["resolution"].astype(str).str.strip()
+    df = df[res_str != ""]
+    df = df[["country", "ms_vote", "resolution", "year"]]
+    n_rows = len(df)
+    n_countries = df["country"].nunique()
+    n_resolutions = df["resolution"].nunique()
+    print(f"UNGA clean: {n_rows} rows remaining")
+    print(f"UNGA clean: {n_countries} unique countries")
+    print(f"UNGA clean: {n_resolutions} unique resolutions")
+    return df.reset_index(drop=True)
+
+
 if __name__ == "__main__":
-    from modules.geopolitics.loader import load_vdem, load_gdelt
+    from modules.geopolitics.loader import load_gdelt, load_unga, load_vdem
 
     df_vdem = load_vdem()
     df_clean_vdem = clean_vdem(df_vdem)
@@ -102,4 +138,10 @@ if __name__ == "__main__":
     print("\nGDELT cleaned:")
     print(df_clean_gdelt.head())
     print(df_clean_gdelt.shape)
+
+    df_unga = load_unga()
+    df_unga_clean = clean_unga(df_unga)
+    print("\nUNGA cleaned:")
+    print(df_unga_clean.head())
+    print(df_unga_clean.shape)
 
