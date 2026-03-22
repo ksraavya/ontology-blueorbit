@@ -12,16 +12,13 @@ BATCH_SIZE = 500
 
 
 def _build_props(item: dict[str, Any]) -> dict[str, Any]:
-    """
-    Merge EDGE_SCHEMA defaults with item properties.
-    Mirrors what GraphOps._apply_edge_schema() does
-    so batched writes stay schema-consistent.
-    """
     from common.config import EDGE_SCHEMA
     final = EDGE_SCHEMA.copy()
     final.update(item["properties"])
+    # Force year to int — prevents float/int MERGE duplicates
+    if "year" in final and final["year"] is not None:
+        final["year"] = int(final["year"])
     return final
-
 
 def _batch_write(
     conn: Neo4jConnection,
@@ -54,12 +51,13 @@ def _batch_write(
         ]
 
         query = f"""
-        UNWIND $rows AS row
-        MERGE (a:{src_label} {{name: row.source}})
-        MERGE (b:{tgt_label} {{name: row.target}})
-        MERGE (a)-[r:{rel_type}]->(b)
-        SET r += row.props
-        """
+                    UNWIND $rows AS row
+                    MERGE (a:{src_label} {{name: row.source}})
+                    MERGE (b:{tgt_label} {{name: row.target}})
+                    MERGE (a)-[r:{rel_type} {{year: toInteger(row.props.year)}}]->(b)
+                    SET r += row.props
+                    SET r.year = toInteger(row.props.year)
+                """
 
         conn.run_query(query, {"rows": rows})
         wrote += len(rows)
@@ -93,7 +91,7 @@ def load_to_graph(data: list[dict]) -> None:
                     "Batch write failed (rows %d-%d): %s",
                     start,
                     start + len(batch),
-                    exc,
+                    exc_info=True,
                 )
 
         logger.info(
