@@ -67,14 +67,14 @@ def compute_alignment_scores() -> None:
     try:
         try:
             conn = Neo4jConnection()
-            rows = conn.run_query(
+            results = conn.run_query(
                 """
                 MATCH (a:Country)-[r:DIPLOMATIC_INTERACTION]->(b:Country)
                 RETURN a.name AS country1, b.name AS country2, SUM(r.weight) AS total_weight
                 """
             )
             weights: List[float] = []
-            for row in rows:
+            for row in results:
                 tw = row.get("total_weight")
                 if tw is None:
                     continue
@@ -84,27 +84,27 @@ def compute_alignment_scores() -> None:
                     continue
             max_weight = max(weights) if weights else 0.0
 
-            pair_count = 0
-            for row in rows:
-                c1, c2 = row.get("country1"), row.get("country2")
-                tw = row.get("total_weight")
-                if c1 is None or c2 is None or tw is None:
-                    continue
-                try:
-                    total_weight = float(tw)
-                except (TypeError, ValueError):
-                    continue
-                alignment_score = normalize_by_max(total_weight, max_weight)
-                conn.run_query(
-                    """
-                    MATCH (a:Country {name: $c1})-[r:DIPLOMATIC_INTERACTION]->(b:Country {name: $c2})
-                    SET r.alignment_score = $score
-                    """,
-                    {"c1": str(c1), "c2": str(c2), "score": alignment_score},
-                )
-                pair_count += 1
+            pairs = [
+                {
+                    "c1": r["country1"],
+                    "c2": r["country2"],
+                    "score": normalize_by_max(float(r["total_weight"]), max_weight),
+                }
+                for r in results
+                if r["total_weight"] is not None
+            ]
 
-            print(f"Alignment scores computed for {pair_count} pairs")
+            write_query = """
+            UNWIND $pairs AS pair
+            MATCH (a:Country {name: pair.c1})-[r:DIPLOMATIC_INTERACTION]->(b:Country {name: pair.c2})
+            SET r.alignment_score = pair.score,
+                r.value = pair.score,
+                r.normalized_weight = pair.score,
+                r.confidence = 0.8
+            """
+
+            conn.run_query(write_query, {"pairs": pairs})
+            print(f"Alignment scores computed for {len(pairs)} pairs")
         except Exception as exc:
             print(f"compute_alignment_scores failed: {exc}")
             raise
@@ -130,18 +130,24 @@ def compute_centrality() -> None:
                     "instead of eigenvector_centrality_numpy."
                 )
                 scores = nx.eigenvector_centrality(G, weight="weight", max_iter=5000)
-            for country_name, score in scores.items():
-                conn.run_query(
-                    """
-                    MATCH (c:Country {name: $name})
-                    SET c.centrality = $score
-                    """,
-                    {"name": str(country_name), "score": float(score)},
-                )
-            ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:10]
-            print("Top 10 countries by eigenvector centrality:")
-            for country, sc in ranked:
-                print(f"  {country}: {sc:.6f}")
+
+            nodes = [
+                {"name": name, "score": float(score)}
+                for name, score in scores.items()
+            ]
+
+            write_query = """
+            UNWIND $nodes AS node
+            MATCH (c:Country {name: node.name})
+            SET c.centrality = node.score
+            """
+
+            conn.run_query(write_query, {"nodes": nodes})
+
+            top_10 = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:10]
+            print("Top 10 most central countries:")
+            for name, score in top_10:
+                print(f"  {name}: {score:.6f}")
         except Exception as exc:
             print(f"compute_centrality failed: {exc}")
             raise
@@ -161,24 +167,28 @@ def detect_blocs() -> None:
                 print("detect_blocs: no nodes in graph; no blocs detected.")
                 return
             partition = community.best_partition(G_undirected, weight="weight")
-            for country_name, bloc in partition.items():
-                conn.run_query(
-                    """
-                    MATCH (c:Country {name: $name})
-                    SET c.bloc_id = $bloc
-                    """,
-                    {"name": str(country_name), "bloc": int(bloc)},
-                )
 
-            by_bloc: Dict[int, List[str]] = defaultdict(list)
-            for country_name, bloc_id in partition.items():
-                by_bloc[int(bloc_id)].append(str(country_name))
+            blocs = [
+                {"name": name, "bloc": int(bloc_id)}
+                for name, bloc_id in partition.items()
+            ]
 
-            n_blocs = len(by_bloc)
-            print(f"Detected {n_blocs} bloc(s)")
-            for bid in sorted(by_bloc.keys()):
-                sample = sorted(by_bloc[bid])[:3]
-                print(f"  Bloc {bid} (sample): {', '.join(sample)}")
+            write_query = """
+            UNWIND $blocs AS item
+            MATCH (c:Country {name: item.name})
+            SET c.bloc_id = item.bloc
+            """
+
+            conn.run_query(write_query, {"blocs": blocs})
+
+            num_blocs = len(set(partition.values()))
+            print(f"Detected {num_blocs} bloc(s)")
+
+            bloc_members: Dict[int, List[str]] = defaultdict(list)
+            for name, bloc_id in partition.items():
+                bloc_members[bloc_id].append(name)
+            for bloc_id, members in sorted(bloc_members.items()):
+                print(f"  Bloc {bloc_id} (sample): {', '.join(members[:3])}")
         except Exception as exc:
             print(f"detect_blocs failed: {exc}")
             raise
@@ -206,15 +216,6 @@ def compute_political_similarity(country_a: str, country_b: str) -> float:
 
 
 if __name__ == "__main__":
-    print("--- compute_alignment_scores ---")
     compute_alignment_scores()
-    print()
-    print("--- compute_centrality ---")
     compute_centrality()
-    print()
-    print("--- detect_blocs ---")
     detect_blocs()
-    print()
-    print("--- compute_political_similarity('India', 'United States') ---")
-    similarity = compute_political_similarity("India", "United States")
-    print(f"Political similarity: {similarity:.6f}")
