@@ -9,7 +9,7 @@ import pandas as pd
 
 from common.db import Neo4jConnection
 from common.graph_ops import GraphOps
-from common.ontology import HAS_POLITICAL_SYSTEM
+from common.ontology import ALIGNED_WITH, HAS_POLITICAL_SYSTEM
 
 
 '''def insert_political_systems(df: pd.DataFrame) -> None:
@@ -119,12 +119,52 @@ def insert_diplomatic_edges(df: pd.DataFrame) -> None:
     print(f"Inserted {len(df)} diplomatic edges")
 
 
+def insert_vote_similarity(df: pd.DataFrame) -> None:
+    """
+    Insert UNGA vote similarity scores as ALIGNED_WITH
+    edges between Country nodes.
+
+    Input DataFrame has columns:
+    country_a, country_b, year, agreements,
+    total_votes, vote_similarity, normalized_weight
+    """
+    rows = df.to_dict("records")
+    conn = Neo4jConnection()
+    batch_size = 1000
+    total = len(rows)
+    query = f"""
+        UNWIND $rows AS row
+        MERGE (a:Country {{name: row.country_a}})
+        MERGE (b:Country {{name: row.country_b}})
+        MERGE (a)-[r:{ALIGNED_WITH} {{year: row.year}}]->(b)
+        SET r.vote_similarity = row.vote_similarity,
+            r.agreements = row.agreements,
+            r.total_votes = row.total_votes,
+            r.normalized_weight = row.normalized_weight,
+            r.value = row.vote_similarity,
+            r.confidence = 0.8,
+            r.source = "UNGA"
+        """
+    cumulative = 0
+    try:
+        for batch_num, start in enumerate(range(0, total, batch_size), start=1):
+            batch = rows[start : start + batch_size]
+            conn.run_query(query, {"rows": batch})
+            cumulative += len(batch)
+            print(f"Inserted batch {batch_num} — total {cumulative} rows so far")
+    finally:
+        conn.close()
+
+    print(f"Inserted {total} ALIGNED_WITH edges total")
+
+
 if __name__ == "__main__":
     import sys
     sys.path.insert(0, '.')
 
-    from modules.geopolitics.loader import load_vdem, load_gdelt
-    from modules.geopolitics.cleaner import clean_vdem, clean_gdelt
+    from modules.geopolitics.loader import load_vdem, load_gdelt, load_unga
+    from modules.geopolitics.cleaner import clean_vdem, clean_gdelt, clean_unga
+    from modules.geopolitics.compute import compute_vote_similarity
 
     df_vdem = load_vdem()
     df_vdem_clean = clean_vdem(df_vdem)
@@ -133,3 +173,8 @@ if __name__ == "__main__":
     df_gdelt = load_gdelt()
     df_gdelt_clean = clean_gdelt(df_gdelt)
     insert_diplomatic_edges(df_gdelt_clean)
+
+    df_unga = load_unga()
+    df_unga_clean = clean_unga(df_unga)
+    df_similarity = compute_vote_similarity(df_unga_clean)
+    insert_vote_similarity(df_similarity)
