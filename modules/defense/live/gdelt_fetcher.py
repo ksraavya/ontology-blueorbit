@@ -7,8 +7,8 @@ import time
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))) 
  
 from common.db import Neo4jConnection 
-from common.country_mapper import normalize_country 
- 
+from common.entity_mapper import normalize_entity
+
 GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc" 
  
 DEFENCE_KEYWORDS = [ 
@@ -55,7 +55,7 @@ def fetch_gdelt_events(keyword, days_back=7):
         }) 
         df["keyword"] = keyword 
         df["country"] = df["country"].apply( 
-            lambda x: normalize_country(x) if pd.notna(x) and x else None 
+            lambda x: normalize_entity(x, entity_type='country') if pd.notna(x) and x else None 
         ) 
         df = df.dropna(subset=["country", "title"]) 
         df["published"] = pd.to_datetime( 

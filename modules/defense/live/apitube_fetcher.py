@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
 from common.db import Neo4jConnection
-from common.country_mapper import normalize_country
+from common.entity_mapper import normalize_entity
 
 load_dotenv()
 

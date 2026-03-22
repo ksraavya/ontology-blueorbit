@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
 from common.db import Neo4jConnection
-from common.country_mapper import normalize_country
+from common.entity_mapper import normalize_entity
 
 RSS_FEEDS = {
     "defensenews_land": "https://www.defensenews.com/arc/outboundfeeds/rss/category/land/",
