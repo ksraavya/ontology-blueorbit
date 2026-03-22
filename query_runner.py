@@ -16,21 +16,10 @@ def run(query, params=None):
         print(f"Error: {e}")
     finally:
         conn.close()
-
-# ── FULL HEALTH CHECK ──────────────────────────────────────
 query = """
-MATCH (c:Country)-[:BELONGS_TO]->(reg)
-MATCH (c)-[cf:HAS_CONFLICT_STATS]->(y:Year)
-WHERE y.year >= 2015
-RETURN reg.name AS region,
-       count(DISTINCT c) AS countries_in_region,
-       sum(cf.total_fatalities) AS total_fatalities_since_2015,
-       sum(cf.violence_events) AS total_violence_events,
-       round(avg(cf.total_fatalities), 0) AS avg_fatalities_per_country
-ORDER BY total_fatalities_since_2015 DESC
+MATCH (c:Country)-[r:SPENDS_ON_DEFENSE]->(y:Year)
+RETURN count(r) AS spending
 """
-# ────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     print("Running Health Check Query...")
     run(query)

@@ -2,7 +2,7 @@
 
 ## Global Ontology Engine — Defence Module
 
-### Last Updated: March 20, 2026
+### Last Updated: March 21, 2026
 
 ---
 
@@ -12,156 +12,123 @@ A multi-module intelligence system that builds a shared knowledge graph in Neo4j
 
 **Team modules:**
 
-- Defence (you) — DONE
+- Defence (you) — DONE (Refactored to 4-Layer Architecture)
 - Economy/Trade — in progress
 - Climate — in progress
 - Geopolitics — in progress
 
 ---
 
-## PROJECT STRUCTURE
+## PROJECT STRUCTURE (4-LAYER ARCHITECTURE)
+
+The Defence module follows a decoupled 4-layer pipeline for data processing:
 
 ```
 ontology-blueorbit/
 │
-├── common/                        ← OWNED BY TEAM LEADER, DO NOT TOUCH
-│   ├── __init__.py
-│   ├── db.py                      ← Neo4j connection helper
+├── common/                        ← SHARED UTILITIES
+│   ├── __init__.py                ← Package marker (Added)
+│   ├── db.py                      ← Neo4j connection layer (Neo4jConnection)
 │   ├── country_mapper.py          ← ISO normalization + custom mappings
-│   ├── ontology.py                ← Global relationship definitions
-│   └── config.py
+│   ├── entity_mapper.py           ← Multi-entity normalization logic
+│   ├── graph_ops.py               ← Standardized Neo4j operations
+│   └── ontology.py                ← Global relationship definitions
 │
 ├── modules/
-│   └── defense/                   ← YOUR MODULE, FULLY BUILT
+│   └── defense/                   ← DEFENCE INTELLIGENCE MODULE
 │       ├── __init__.py
-│       ├── loaders/               ← Static dataset loaders
-│       │   ├── milex_loader.py
-│       │   ├── arms_loader.py
-│       │   └── acled_loader.py
-│       ├── live/                  ← Live data ingestion pipeline
+│       ├── ingest.py              ← LAYER 1: Raw data reading (SIPRI, ACLED)
+│       ├── transform.py           ← LAYER 2: Cleaning and entity mapping
+│       ├── compute.py             ← LAYER 3: Metric calculation (trends, weights)
+│       ├── load.py                ← LAYER 4: Persistence to Neo4j
+│       ├── pipeline.py            ← Orchestrator for the 4-layer flow
+│       │
+│       ├── live/                  ← LIVE INTELLIGENCE PIPELINE
 │       │   ├── acled_live.py      ← Live conflict events (API)
 │       │   ├── gdelt_fetcher.py   ← Global news tracking (API)
-│       │   ├── rss_fetcher.py     ← Industry news (Defense News RSS)
-│       │   ├── apitube_fetcher.py ← Targeted news (API)
-│       │   └── run_all_live.py    ← Orchestrator for live updates
-│       ├── cleaner.py             ← Data cleaning logic
-│       ├── inserter.py            ← Neo4j insertion for static data
-│       ├── analytics.py           ← Core analytical queries
-│       ├── routes.py              ← FastAPI route definitions
-│       ├── pipeline.py            ← Static data pipeline runner
-│       ├── graph_enrichment.py    ← Adds Regions and Alliances
-│       └── test_connection.py
+│       │   ├── rss_fetcher.py     ← Defense industry news (RSS)
+│       │   ├── apitube_fetcher.py ← Targeted high-quality news (API)
+│       │   ├── news_enrichment.py ← Intelligence extraction (NLP-lite)
+│       │   └── run_all_live.py    ← Master orchestrator for live updates
+│       │
+│       ├── graph_enrichment.py    ← Static enrichment (Regions/Alliances)
+│       └── graph_enrichment_extended.py ← Geopolitical metadata (Nuclear/P5/Regional Powers)
 │
 ├── api/
 │   ├── __init__.py
 │   └── main.py                    ← FastAPI app entry point
 │
 ├── data/
-│   ├── raw/                       ← Static XLSX/CSV source files
-│   └── processed/                 ← Intermediate cleaned CSVs
+│   ├── raw/                       ← Source files (SIPRI_Milex.xlsx, SIPRI_Arms.xlsx, ACLED.csv)
+│   └── processed/                 ← Cleaned intermediate data
 │
-├── query_runner.py                ← Terminal utility for Cypher queries
-├── .env                           ← API keys and DB credentials
-├── .gitignore
-├── requirements.txt
+├── query_runner.py                ← Analytical query utility
+├── verify_enrichment.py           ← Verification tool (Transient)
+├── .env                           ← API keys and credentials
 └── PROJECT_CONTEXT.md             ← (this file)
 ```
 
 ---
 
-## ENVIRONMENT & CREDENTIALS
-
-**.env file requirements:**
-
-```
-NEO4J_URI=neo4j+ssc://cb841adb.databases.neo4j.io
-NEO4J_USER=cb841adb
-NEO4J_PASSWORD=...
-ACLED_EMAIL=...
-ACLED_PASSWORD=...
-APITUBE_API_KEY=...
-```
-
-**Database:** Shared cloud instance on Neo4j AuraDB. All modules write to the same URI.
-
----
-
 ## GRAPH SCHEMA — DEFENCE MODULE
 
-### 1. Static Entities & Relations
+### 1. Core Historical Entities
 
-```
-(Country {name}) -[:SPENDS_ON_DEFENSE {amount_usd_millions, source}]-> (Year {year})
-(Country {name}) -[:EXPORTS_ARMS {tiv_millions, source}]-> (Year {year})
-(Country {name}) -[:HAS_CONFLICT_STATS {fatalities, events, source}]-> (Year {year})
-```
-
-### 2. Live Entities & Relations
-
-```
-(Country {name}) -[:INVOLVED_IN]-> (ConflictEvent {event_id, type, date, fatalities})
-(Country {name}) -[:MENTIONED_IN]-> (NewsArticle {title, url, source, published, keyword})
+```cypher
+(Country {name}) -[:SPENDS_ON_DEFENSE {amount_usd_millions, normalized_weight, source}]-> (Year {year})
+(Country {name}) -[:EXPORTS_ARMS {tiv_millions, dependency_score, source}]-> (Year {year})
+(Country {name}) -[:HAS_CONFLICT_STATS {fatalities, events, fatality_trend, source}]-> (Year {year})
 ```
 
-### 3. Enrichment Entities & Relations
+### 2. Live Intelligence Signals
 
+```cypher
+(Country {name}) -[:MENTIONED_IN]-> (NewsArticle {title, url, category, enriched, published})
+(Country {name}) -[:HAS_CONFLICT_SIGNAL]-> (ConflictSignal {date, category, article_count})
+(Country {name}) -[r:CO_MENTIONED_WITH {count, dominant_context}]-> (Country)
 ```
-(Country {name}) -[:BELONGS_TO]-> (Region {name})
-(Country {name}) -[:MEMBER_OF]-> (Alliance {name})
+
+### 3. Geopolitical Metadata
+
+```cypher
+(Country) -[:BELONGS_TO]-> (Region)
+(Country) -[:MEMBER_OF]-> (Alliance)
+Country Properties: {nuclear_status, is_nuclear, un_p5, is_regional_power, live_risk_score}
 ```
-
----
-
-## API ENDPOINTS
-
-| Method | Endpoint                       | Description                             |
-| ------ | ------------------------------ | --------------------------------------- |
-| GET    | `/defense/spending/top`        | Top defense spenders (2023)             |
-| GET    | `/defense/spending/{country}`  | Spending trend for a country            |
-| GET    | `/defense/arms/top`            | Top arms exporters all time             |
-| GET    | `/defense/conflicts/top`       | Most conflict-prone countries           |
-| GET    | `/defense/conflicts/{country}` | Conflict stats for a country            |
-| GET    | `/defense/live/news`           | Latest live news articles (all sources) |
 
 ---
 
 ## HOW TO RUN THINGS
 
-**Run Static Pipeline:**
+**Run Historical Pipeline (4-Layer):**
 `python -m modules.defense.pipeline`
 
-**Run Live Updates (ACLED, News):**
+**Run Live Intelligence Refresh (Ingest + Enrich):**
 `python -m modules.defense.live.run_all_live`
 
-**Enrich Graph (Regions/Alliances):**
-`python -m modules.defense.graph_enrichment`
+**Update Geopolitical Metadata:**
+`python -m modules.defense.graph_enrichment_extended`
 
 **Start API:**
 `uvicorn api.main:app --reload`
 
 ---
 
-## WHAT IS DONE
+## ACHIEVEMENTS & RECENT CHANGES
 
-- ✅ **Static Ingestion**: SIPRI and ACLED historical data fully loaded.
-- ✅ **Live Pipeline**: Real-time conflict and news ingestion (ACLED, GDELT, RSS, APITube).
-- ✅ **Graph Enrichment**: Automated mapping of countries to Regions and Alliances.
-- ✅ **Ontology & Mapping**: `common/` files updated with defense-specific relations and country aliases.
-- ✅ **API & Analytics**: 6 endpoints and 5 core analytics functions built and tested.
-- ✅ **Route Ordering**: Fixed bug where dynamic routes shadowed static ones.
-
-## WHAT IS PENDING
-
-- ⏳ **Cross-Module Integration**: Testing queries that join Defense with Economy/Trade once those modules are live.
-- ⏳ **Temporal Analysis**: Building views that show news spikes correlated with conflict fatalities.
-- ⏳ **Demo Dashboard**: Prepared Cypher queries for the final presentation.
+- ✅ **Architectural Refactor**: Migrated from monolithic loaders to a 4-layer decoupled architecture (`Ingest` → `Transform` → `Compute` → `Load`).
+- ✅ **News Intelligence Layer**: Built a non-LLM NLP pipeline in `news_enrichment.py` that classifies articles into categories (`conflict`, `diplomacy`, `arms_trade`, `escalation`) and generates `ConflictSignal` indicators.
+- ✅ **Dynamic Risk Scoring**: Implemented a `live_risk_score` (0.0 - 1.0) that correlates real-time news spikes with historical fatality trends and defense capacity.
+- ✅ **Geopolitical Enrichment**: Added metadata for Nuclear status, UN Security Council P5 membership, and Regional Power status to the knowledge graph.
+- ✅ **Co-Mention Networking**: Developed a category-aware co-mention network that identifies `hostile` vs `cooperative` relationships between countries based on live news context.
+- ✅ **Secondary Country Extraction**: Implemented batch-optimized alias and keyword matching to identify secondary countries in news titles, increasing network density.
 
 ---
 
 ## CONTEXT FOR NEW AI AGENTS
 
-- **Shared Nodes**: Always use `MERGE` for `Country` and `Year`. These are the "glue" nodes connecting all modules.
-- **Normalization**: Every country name **MUST** pass through `normalize_country()` from `common.country_mapper` before database entry.
-- **Ontology**: Only use relationship names defined in `common.ontology`. New ones must be added there first.
-- **Rate Limits**: GDELT and APITube have strict rate limits. The fetchers include `time.sleep()` to respect them. Do not remove these.
-- **Imports**: Always run from project root using `python -m module.path`. Use the `sys.path` hack at the top of module files to ensure `common` is accessible.
+- **Normalization**: Use `common.entity_mapper` or `common.country_mapper` for all name resolution.
+- **Neo4j Labels**: Use `NewsArticle` for live news articles.
+- **Batching**: Always use `UNWIND` for large-scale database updates to maintain performance.
+- **Risk Calculation**: The `live_risk_score` is weighted: 40% Live News Signal, 60% Historical Conflict Intensity.
+- **Co-mentions**: Only pairs with `count >= 2` articles in the last 30 days are promoted to `CO_MENTIONED_WITH` relationships.

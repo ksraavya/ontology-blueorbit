@@ -201,6 +201,7 @@ RELATION_METADATA: Dict[str, Dict] = {
     # ---------- FLOW ----------
     EXPORTS_TO: {"type": "flow", "affects": ["trade", "dependency", "influence"]},
     IMPORTS_FROM: {"type": "flow", "affects": ["trade", "dependency"]},
+    EXPORTS_ARMS: {"type": "flow", "affects": ["defense", "influence"]},
     EXPORTS_WEAPON_TO: {"type": "flow", "affects": ["defense", "influence"]},
     IMPORTS_WEAPON_FROM: {"type": "flow", "affects": ["defense", "dependency"]},
     EXPORTS_ENERGY_TO: {"type": "flow", "affects": ["energy", "influence"]},
@@ -223,6 +224,7 @@ RELATION_METADATA: Dict[str, Dict] = {
     HAS_INFLATION: {"type": "state", "affects": ["economic_stability"]},
     HAS_TRADE_BALANCE: {"type": "state", "affects": ["economic_health"]},
     SPENDS_ON_DEFENSE: {"type": "state", "affects": ["military_strength"]},
+    HAS_CONFLICT_STATS: {"type": "state", "affects": ["risk"]},
     EMITS: {"type": "state", "affects": ["climate_pressure"]},
     HAS_RESOURCE_STRESS: {"type": "state", "affects": ["climate_vulnerability"]},
 
