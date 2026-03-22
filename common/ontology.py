@@ -213,6 +213,8 @@ RELATION_METADATA: Dict[str, Dict] = {
     HAS_DIPLOMATIC_TIES_WITH: {"type": "relationship", "affects": ["alignment"]},
     STRATEGIC_PARTNER_OF: {"type": "relationship", "affects": ["alignment", "influence"]},
     HAS_SECURITY_COOPERATION_WITH: {"type": "relationship", "affects": ["defense"]},
+    HAS_TRADE_AGREEMENT_WITH: {"type": "relationship", "affects": ["trade", "alignment"]},
+    IMPOSED_SANCTIONS_ON: {"type": "risk", "affects": ["trade", "economic_risk", "alignment"]},
 
     # ---------- STATE ----------
     HAS_GDP: {"type": "state", "affects": ["economic_power"]},
