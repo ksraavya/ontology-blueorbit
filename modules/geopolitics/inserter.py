@@ -12,7 +12,7 @@ from common.graph_ops import GraphOps
 from common.ontology import HAS_POLITICAL_SYSTEM
 
 
-def insert_political_systems(df: pd.DataFrame) -> None:
+'''def insert_political_systems(df: pd.DataFrame) -> None:
     """
     Insert political system classifications from V-Dem data into the graph.
 
@@ -43,7 +43,32 @@ def insert_political_systems(df: pd.DataFrame) -> None:
         conn.close()
 
     print(f"Inserted {len(df)} political system records")
+'''
 
+def insert_political_systems(df: pd.DataFrame) -> None:
+    conn = Neo4jConnection()
+    try:
+        rows = df.rename(columns={"v2x_polyarchy": "score"}).to_dict("records")
+        
+        query = """
+        UNWIND $rows AS row
+        MERGE (c:Country {name: row.country})
+        MERGE (p:PoliticalSystem {
+            name: CASE WHEN row.score >= 0.5 
+                  THEN "Democracy" ELSE "Autocracy" END
+        })
+        MERGE (c)-[r:HAS_POLITICAL_SYSTEM]->(p)
+        SET r.score = row.score,
+            r.year = row.year,
+            r.value = row.score,
+            r.normalized_weight = row.score,
+            r.confidence = 0.8
+        """
+        
+        conn.run_query(query, {"rows": rows})
+        print(f"Inserted {len(df)} political system records")
+    finally:
+        conn.close()
 
 def insert_diplomatic_edges(df: pd.DataFrame) -> None:
     """
