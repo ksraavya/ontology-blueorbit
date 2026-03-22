@@ -93,6 +93,20 @@ def compute_vote_similarity(df: pd.DataFrame) -> pd.DataFrame:
         lambda x: normalize_by_max(x, max_sim)
     )
 
+    # Keep only most recent year per country pair
+    print(f"Before deduplication: {len(result_df)} pairs")
+
+    result_df = result_df.sort_values("year", ascending=False)
+    result_df = result_df.drop_duplicates(
+        subset=["country_a", "country_b"],
+        keep="first",
+    )
+    result_df = result_df.sort_values(["country_a", "country_b"])
+
+    print(f"After keeping latest year per pair: {len(result_df)} pairs")
+    print("Year distribution:")
+    print(result_df["year"].value_counts().sort_index())
+
     print(f"Total pairs computed: {len(result_df)}")
     print(result_df.head())
 
