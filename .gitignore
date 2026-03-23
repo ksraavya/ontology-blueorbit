@@ -1,9 +1,40 @@
+# Environment and Secrets
 .env
 .env.*
+
+# Python Cache and Build
 __pycache__/
 *.pyc
-node_modules/
-.DS_Store
-.idea/
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.toast
+.lucid
+.precision
+.pytype/
+
+# Data and Staging
+data/raw/
+data/processed/
+*.csv
+*.xlsx
+*.xls
+PROJECT_CONTEXT.md
+1
+3
+(y
+(y2
+2020
+
+# IDE and System Files
 .vscode/
+.idea/
+.DS_Store
+Thumbs.db
+node_modules/
 *.log

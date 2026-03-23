@@ -18,7 +18,7 @@ def get_spending_trend(country_name: str) -> list:
         try:
             query = """
             MATCH (c:Country {name: $name})-[r:SPENDS_ON_DEFENSE]->(y:Year)
-            RETURN y.year AS year, r.amount_usd_millions AS amount
+            RETURN y.year AS year, r.value  AS amount
             ORDER BY year
             """
             return conn.run_query(query, {"name": country_name})
@@ -35,8 +35,7 @@ def get_top_defense_spenders(limit: int = 10) -> list:
             query = """
             MATCH (c:Country)-[r:SPENDS_ON_DEFENSE]->(y:Year)
             WHERE y.year = 2023
-            RETURN c.name AS country, r.amount_usd_millions AS spending_2023
-            ORDER BY spending_2023 DESC LIMIT $limit
+            RETURN c.name AS country, r.value AS spending_2023 DESC LIMIT $limit
             """
             return conn.run_query(query, {"limit": limit})
         finally:
