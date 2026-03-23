@@ -219,20 +219,128 @@ def transform_macro_data(rows: list[dict]) -> list[dict]:
     )
     return out
 
+def transform_sanctions_data(rows: list[dict]) -> list[dict]:
+    """
+    Clean and normalize OFAC sanctions data.
+    Each row: { sanctioned_country, entity_name, sanctioning_country, source }
+    Returns deduplicated country-level sanctions only.
+    One record per unique (sanctioning_country, sanctioned_country) pair.
+    """
+    out: list[dict] = []
+    seen: set[tuple] = set()
+ 
+    for row in rows:
+        sanctioned = row.get("sanctioned_country")
+        sanctioning = row.get("sanctioning_country")
+ 
+        if _is_blank_entity(sanctioned) or _is_blank_entity(sanctioning):
+            continue
+ 
+        sanctioned_n = _normalize_cached(sanctioned)
+        if not sanctioned_n:
+            logger.debug(
+                "Skipped sanctions row: could not normalize sanctioned country %r",
+                sanctioned,
+            )
+            continue
+ 
+        sanctioning_n = _normalize_cached(sanctioning)
+        if not sanctioning_n:
+            continue
+ 
+        # Deduplicate — we want one edge per country pair, not per entity
+        pair_key = (sanctioning_n, sanctioned_n)
+        if pair_key in seen:
+            continue
+        seen.add(pair_key)
+ 
+        out.append({
+            "sanctioning_country": sanctioning_n,
+            "sanctioned_country":  sanctioned_n,
+            "source":              row.get("source", "OFAC SDN"),
+        })
+ 
+    logger.info(
+        "transform_sanctions_data: input=%d output=%d unique_pairs",
+        len(rows), len(out),
+    )
+    return out
+ 
+ 
+def transform_trade_agreements_data(rows: list[dict]) -> list[dict]:
+    """
+    Clean and normalize WTO trade agreement bilateral pairs.
+    Each row: { country_a, country_b, agreement_name, source }
+    Returns deduplicated normalized country pairs.
+    """
+    out: list[dict] = []
+    seen: set[tuple] = set()
+ 
+    for row in rows:
+        country_a = row.get("country_a")
+        country_b = row.get("country_b")
+ 
+        if _is_blank_entity(country_a) or _is_blank_entity(country_b):
+            continue
+ 
+        a_n = _normalize_cached(country_a)
+        if not a_n:
+            logger.debug(
+                "Skipped trade agreement row: could not normalize %r", country_a
+            )
+            continue
+ 
+        b_n = _normalize_cached(country_b)
+        if not b_n:
+            logger.debug(
+                "Skipped trade agreement row: could not normalize %r", country_b
+            )
+            continue
+ 
+        # Skip self-pairs
+        if a_n == b_n:
+            continue
+ 
+        # Deduplicate — normalize pair order alphabetically
+        pair_key = tuple(sorted([a_n, b_n]))
+        if pair_key in seen:
+            continue
+        seen.add(pair_key)
+ 
+        out.append({
+            "country_a":        a_n,
+            "country_b":        b_n,
+            "agreement_name":   row.get("agreement_name", ""),
+            "source":           row.get("source", "WTO RTA"),
+        })
+ 
+    logger.info(
+        "transform_trade_agreements_data: input=%d output=%d unique_pairs",
+        len(rows), len(out),
+    )
+    return out
+
 
 def transform_all(data: dict[str, list[dict]]) -> dict[str, list[dict]]:
-    trade_clean = transform_trade_data(data["trade"])
-    energy_clean = transform_trade_data(data["energy"])
-    macro_clean = transform_macro_data(data["macro"])
+    trade_clean      = transform_trade_data(data["trade"])
+    energy_clean     = transform_trade_data(data["energy"])
+    macro_clean      = transform_macro_data(data["macro"])
+    sanctions_clean  = transform_sanctions_data(data.get("sanctions", []))
+    agreements_clean = transform_trade_agreements_data(
+        data.get("trade_agreements", [])
+    )
+ 
     logger.info(
-        "transform_all: trade=%d energy=%d macro=%d",
-        len(trade_clean),
-        len(energy_clean),
-        len(macro_clean),
+        "transform_all: trade=%d energy=%d macro=%d "
+        "sanctions=%d agreements=%d",
+        len(trade_clean), len(energy_clean), len(macro_clean),
+        len(sanctions_clean), len(agreements_clean),
     )
     return {
-        "trade": trade_clean,
-        "energy": energy_clean,
-        "macro": macro_clean,
-        "orgs": data.get("orgs", []),
+        "trade":            trade_clean,
+        "energy":           energy_clean,
+        "macro":            macro_clean,
+        "orgs":             data.get("orgs", []),
+        "sanctions":        sanctions_clean,
+        "trade_agreements": agreements_clean,
     }

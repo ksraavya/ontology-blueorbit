@@ -12,6 +12,8 @@ from common.ontology import (
     HAS_INFLATION,
     HAS_TRADE_BALANCE,
     HAS_TRADE_VOLUME_WITH,
+    IMPOSED_SANCTIONS_ON,
+    HAS_TRADE_AGREEMENT_WITH,
     get_relation_type,
 )
 from common.intelligence.aggregation import max_value, sum_values
@@ -30,7 +32,10 @@ from modules.economy.constants import (
     MIN_DEPENDENCY,
     TRADE_BALANCE_METRIC_NAME,
     TRADE_BALANCE_TYPE,
-    TRADE_MIN_VALUE_USD,
+    TRADE_MIN_VALUE_USD,    
+    WTO_SOURCE, 
+    OFAC_SOURCE,
+    TRADE_AGREEMENT_STATUS_ACTIVE,
 )
 
 logger = logging.getLogger(__name__)
@@ -341,28 +346,120 @@ def compute_trade_volume(
     logger.info("compute_trade_volume: pairs=%d output=%d", n_pairs, len(out))
     return out
 
+def compute_sanctions_metrics(rows: list[dict]) -> list[dict]:
+    """
+    Compute metrics for IMPOSED_SANCTIONS_ON relationships.
+    Each row: { sanctioning_country, sanctioned_country, source }
+    Relation type is 'risk' per ontology.
+    No normalization needed — binary relationship (sanctioned or not).
+    normalized_weight = 1.0 for all (presence of sanction is the signal).
+    """
+    if not rows:
+        logger.info("compute_sanctions_metrics: no rows")
+        return []
+ 
+    rel_type = get_relation_type(IMPOSED_SANCTIONS_ON)
+    logger.debug("IMPOSED_SANCTIONS_ON ontology type: %s", rel_type)
+ 
+    out: list[dict] = []
+    for row in rows:
+        out.append({
+            "source":       row["sanctioning_country"],
+            "target":       row["sanctioned_country"],
+            "rel":          IMPOSED_SANCTIONS_ON,
+            "source_label": COUNTRY_LABEL,
+            "target_label": COUNTRY_LABEL,
+            "properties": {
+                "value":              1.0,
+                "normalized_weight":  1.0,
+                "year":               2024,
+                "source":             row.get("source", OFAC_SOURCE),
+                "currency":           "USD",
+            },
+        })
+ 
+    logger.info("compute_sanctions_metrics: input=%d output=%d", len(rows), len(out))
+    return out
+ 
+ 
+def compute_trade_agreement_metrics(rows: list[dict]) -> list[dict]:
+    """
+    Compute metrics for HAS_TRADE_AGREEMENT_WITH relationships.
+    Each row: { country_a, country_b, agreement_name, source }
+    Relation type is 'relationship' per ontology.
+    normalized_weight = 1.0 for all active agreements.
+    Edges are bidirectional — write both (A→B) and (B→A).
+    """
+    if not rows:
+        logger.info("compute_trade_agreement_metrics: no rows")
+        return []
+ 
+    rel_type = get_relation_type(HAS_TRADE_AGREEMENT_WITH)
+    logger.debug("HAS_TRADE_AGREEMENT_WITH ontology type: %s", rel_type)
+ 
+    out: list[dict] = []
+    for row in rows:
+        props = {
+            "value":              1.0,
+            "normalized_weight":  1.0,
+            "year":               2024,
+            "agreement_name":     row.get("agreement_name", ""),
+            "source":             row.get("source", WTO_SOURCE),
+            "currency":           "USD",
+        }
+ 
+        # A → B
+        out.append({
+            "source":       row["country_a"],
+            "target":       row["country_b"],
+            "rel":          HAS_TRADE_AGREEMENT_WITH,
+            "source_label": COUNTRY_LABEL,
+            "target_label": COUNTRY_LABEL,
+            "properties":   props,
+        })
+ 
+        # B → A (bidirectional — trade agreements are mutual)
+        out.append({
+            "source":       row["country_b"],
+            "target":       row["country_a"],
+            "rel":          HAS_TRADE_AGREEMENT_WITH,
+            "source_label": COUNTRY_LABEL,
+            "target_label": COUNTRY_LABEL,
+            "properties":   props,
+        })
+ 
+    logger.info(
+        "compute_trade_agreement_metrics: input=%d output=%d (bidirectional)",
+        len(rows), len(out),
+    )
+    return out
+
 
 def compute_all(data: dict[str, list[dict]]) -> dict[str, list[dict]]:
-    trade_metrics = compute_trade_metrics(data["trade"])
-    energy_metrics = compute_energy_metrics(data["energy"])
-    macro_metrics = compute_macro_metrics(data["macro"])
-    volume_metrics = compute_trade_volume(trade_metrics, energy_metrics)
-    balance_metrics = compute_trade_balance(trade_metrics, energy_metrics)
-
+    trade_metrics      = compute_trade_metrics(data["trade"])
+    energy_metrics     = compute_energy_metrics(data["energy"])
+    macro_metrics      = compute_macro_metrics(data["macro"])
+    volume_metrics     = compute_trade_volume(trade_metrics, energy_metrics)
+    balance_metrics    = compute_trade_balance(trade_metrics, energy_metrics)
+    sanctions_metrics  = compute_sanctions_metrics(data.get("sanctions", []))
+    agreement_metrics  = compute_trade_agreement_metrics(
+        data.get("trade_agreements", [])
+    )
+ 
     logger.info(
-        "compute_all: trade=%d energy=%d macro=%d "
-        "volume=%d balance=%d",
-        len(trade_metrics),
-        len(energy_metrics),
-        len(macro_metrics),
-        len(volume_metrics),
-        len(balance_metrics),
+        "compute_all: trade=%d energy=%d macro=%d volume=%d "
+        "balance=%d sanctions=%d agreements=%d",
+        len(trade_metrics), len(energy_metrics), len(macro_metrics),
+        len(volume_metrics), len(balance_metrics),
+        len(sanctions_metrics), len(agreement_metrics),
     )
     return {
-        "trade": trade_metrics,
-        "energy": energy_metrics,
-        "macro": macro_metrics,
-        "volume": volume_metrics,
-        "balance": balance_metrics,
-        "orgs": data.get("orgs", []),
+        "trade":            trade_metrics,
+        "energy":           energy_metrics,
+        "macro":            macro_metrics,
+        "volume":           volume_metrics,
+        "balance":          balance_metrics,
+        "sanctions":        sanctions_metrics,
+        "trade_agreements": agreement_metrics,
+        "orgs":             data.get("orgs", []),
     }

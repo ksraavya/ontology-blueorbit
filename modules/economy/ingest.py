@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from modules.economy.constants import TRADE_AGREEMENT_STATUS_ACTIVE
+
 RAW_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
 
 logger = logging.getLogger(__name__)
@@ -234,38 +236,140 @@ def load_org_data() -> list[dict]:
     logger.info("load_org_data: returning %d rows", len(records))
     return records
 
+def load_sanctions_data() -> list[dict]:
+    """
+    Load OFAC SDN sanctions data.
+    File has no headers — columns are positional.
+    Column 0 = entity ID
+    Column 1 = entity name
+    Column 3 = country (sanctioned by USA)
+    Returns records where country is a non-empty, non '-0-' value.
+    """
+    path = RAW_DIR / "ofac_sdn.csv"
+    if not path.is_file():
+        raise FileNotFoundError(str(path.resolve()))
+ 
+    try:
+        df = pd.read_csv(path, header=None, low_memory=False)
+    except Exception:
+        logger.exception("Failed to read %s", path)
+        raise
+ 
+    # Column 3 is the country column
+    if df.shape[1] < 4:
+        raise ValueError(f"Expected at least 4 columns in {path}, got {df.shape[1]}")
+ 
+    df = df[[1, 3]].copy()
+    df.columns = ["entity_name", "country"]
+ 
+    # Drop rows where country is null, empty, or placeholder '-0-'
+    df = df[df["country"].notna()]
+    df = df[df["country"].astype(str).str.strip() != ""]
+    df = df[df["country"].astype(str).str.strip() != "-0-"]
+    df = df[df["country"].astype(str).str.len() < 40]
+    df = df[~df["country"].astype(str).str.contains(r'\[|\]', regex=True)]
+ 
+    records = []
+    for _, row in df.iterrows():
+        records.append({
+            "sanctioned_country": str(row["country"]).strip().title(),
+            "entity_name": str(row["entity_name"]).strip(),
+            "sanctioning_country": "United States",
+            "source": "OFAC SDN",
+        })
+ 
+    logger.info("load_sanctions_data: returning %d rows", len(records))
+    return records
+ 
+ 
+def load_trade_agreements_data() -> list[dict]:
+    """
+    Load WTO Regional Trade Agreements data.
+    Filters to Status == 'In Force' only.
+    Explodes 'Current signatories' (semicolon-separated) into
+    bilateral country pairs — every country in an agreement
+    gets a HAS_TRADE_AGREEMENT_WITH edge to every other country.
+    Returns one record per bilateral pair per agreement.
+    """
+    path = RAW_DIR / "wto_rta.csv"
+    if not path.is_file():
+        raise FileNotFoundError(str(path.resolve()))
+ 
+    try:
+        df = pd.read_csv(path, low_memory=False)
+    except Exception:
+        logger.exception("Failed to read %s", path)
+        raise
+ 
+    required = ["RTA Name", "Status", "Current signatories"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing columns {missing} in {path}")
+ 
+    # Filter to active agreements only
+    df = df[df["Status"] == TRADE_AGREEMENT_STATUS_ACTIVE].copy()
+    df = df.dropna(subset=["Current signatories"])
+    logger.info("WTO active agreements: %d", len(df))
+ 
+    records = []
+    for _, row in df.iterrows():
+        rta_name = str(row["RTA Name"]).strip()
+        signatories_raw = str(row["Current signatories"])
+ 
+        # Split on semicolon
+        parties = [p.strip() for p in signatories_raw.split(";")]
+        parties = [p for p in parties if p]
+ 
+        if len(parties) < 2:
+            continue
+ 
+        # Generate all bilateral pairs
+        for i in range(len(parties)):
+            for j in range(i + 1, len(parties)):
+                records.append({
+                    "country_a": parties[i],
+                    "country_b": parties[j],
+                    "agreement_name": rta_name,
+                    "source": "WTO RTA",
+                })
+ 
+    logger.info("load_trade_agreements_data: returning %d bilateral pairs", len(records))
+    return records
 
 def load_all(years: list[int] | None = None) -> dict[str, list[dict]]:
     years_list = _baci_years_default(years)
-    
+ 
     trade_all: list[dict] = []
     energy_all: list[dict] = []
-    
+ 
     cc = _load_country_codes()
-    
+ 
     for year in years_list:
         df = _load_baci_year(year)
         if df.empty:
+            logger.warning("Skipping year %d — file not found or empty", year)
             continue
-        
-        # Join country names
-        exp = cc[["country_code", "country_name"]].rename(
-            columns={"country_name": "exporter_name"}
+ 
+        exp = (
+            cc[["country_code", "country_name"]]
+            .rename(columns={"country_name": "exporter_name"})
         )
-        df = df.merge(exp, left_on="i", right_on="country_code", how="left").drop(
-            columns=["country_code"]
+        df = df.merge(
+            exp, left_on="i", right_on="country_code", how="left"
+        ).drop(columns=["country_code"])
+ 
+        imp = (
+            cc[["country_code", "country_name"]]
+            .rename(columns={"country_name": "importer_name"})
         )
-        imp = cc[["country_code", "country_name"]].rename(
-            columns={"country_name": "importer_name"}
-        )
-        df = df.merge(imp, left_on="j", right_on="country_code", how="left").drop(
-            columns=["country_code"]
-        )
+        df = df.merge(
+            imp, left_on="j", right_on="country_code", how="left"
+        ).drop(columns=["country_code"])
+ 
         df = df.dropna(subset=["exporter_name", "importer_name"])
-        
-        # Split trade vs energy
+ 
         k_str = df["k"].astype(str)
-        
+ 
         trade_df = df.loc[~k_str.str.startswith("27")].copy()
         trade_df["value"] = trade_df["v"] * 1000
         trade_all.extend(
@@ -277,7 +381,7 @@ def load_all(years: list[int] | None = None) -> dict[str, list[dict]]:
                 "type":   "trade",
             }).to_dict("records")
         )
-        
+ 
         energy_df = df.loc[k_str.str.startswith("27")].copy()
         energy_df["value"] = energy_df["v"] * 1000
         energy_all.extend(
@@ -289,22 +393,27 @@ def load_all(years: list[int] | None = None) -> dict[str, list[dict]]:
                 "type":   "energy",
             }).to_dict("records")
         )
-        
-        # Free memory immediately after processing each year
+ 
         del df, trade_df, energy_df, k_str
         logger.info("Processed year %d: trade_total=%d energy_total=%d",
                     year, len(trade_all), len(energy_all))
-    
+ 
     macro = load_macro_data()
     orgs = load_org_data()
-    
+    sanctions = load_sanctions_data()
+    trade_agreements = load_trade_agreements_data()
+ 
     logger.info(
-        "All data loaded: trade=%d, energy=%d, macro=%d, orgs=%d",
+        "All data loaded: trade=%d, energy=%d, macro=%d, orgs=%d, "
+        "sanctions=%d, trade_agreements=%d",
         len(trade_all), len(energy_all), len(macro), len(orgs),
+        len(sanctions), len(trade_agreements),
     )
     return {
-        "trade":  trade_all,
-        "energy": energy_all,
-        "macro":  macro,
-        "orgs":   orgs,
+        "trade":             trade_all,
+        "energy":            energy_all,
+        "macro":             macro,
+        "orgs":              orgs,
+        "sanctions":         sanctions,
+        "trade_agreements":  trade_agreements,
     }
