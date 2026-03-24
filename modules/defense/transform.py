@@ -75,7 +75,8 @@ def transform_arms(raw_dict: dict[str, pd.DataFrame]) -> List[Dict[str, Any]]:
     
     file_configs = [
         ('1950_1980', '1950-1980'),
-        ('1981_2000', '1981-2000')
+        ('1981_2000', '1981-2000'),
+        ('2001_2025', '2001-2025')
     ]
 
     for key, period in file_configs:
@@ -103,6 +104,9 @@ def transform_arms(raw_dict: dict[str, pd.DataFrame]) -> List[Dict[str, Any]]:
 
         # Step 6 — Melt to long format
         df = df.melt(id_vars=['country'], var_name='year', value_name='tiv_millions') 
+
+        VALID_YEARS = [str(y) for y in range(1950, 2026)]
+        df = df[df['year'].isin(VALID_YEARS)]
 
         # Step 7 — Apply normalize_entity to country column
         df['country'] = df['country'].apply( 

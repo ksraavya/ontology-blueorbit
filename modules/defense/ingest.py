@@ -47,6 +47,25 @@ def ingest_arms_exports() -> dict[str, pd.DataFrame]:
         arms_data['1981_2000'] = df_1981
     except FileNotFoundError:
         raise FileNotFoundError(f'SIPRI Arms 1981-2000 file not found at {ARMS_1981_FILE}')
+
+    ARMS_2001_FILE = BASE_DATA / 'sipri_arms_2001_2025.csv'
+
+    try:
+        df_2001 = pd.read_csv(
+            ARMS_2001_FILE,
+            skiprows=10,
+            header=0,
+            low_memory=False,
+            on_bad_lines='skip'
+        )
+        print(f'Arms 2001-2025 raw shape: {df_2001.shape}')
+        print(f'Arms 2001-2025 col[3] sample: {df_2001.iloc[:3, 3].tolist()}')
+        arms_data['2001_2025'] = df_2001
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f'SIPRI Arms 2001-2025 file not found at {ARMS_2001_FILE}. '
+            f'Copy import-export-top_2001-2025__1_.csv to data/raw/sipri_arms_2001_2025.csv'
+        )
         
     return arms_data
 

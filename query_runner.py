@@ -19,16 +19,15 @@ def run(query, params=None):
 
 
 query = """
-MERGE (reg:Region {name: 'Eastern Europe'})
-WITH reg
-MATCH (c:Country {name: 'Ukraine'})
-MERGE (c)-[:BELONGS_TO]->(reg)
-WITH reg
-MERGE (reg2:Region {name: 'Middle East'})
-WITH reg2
-MATCH (c2:Country {name: 'Syrian Arab Republic'})
-MERGE (c2)-[:BELONGS_TO]->(reg2)
-RETURN 'done' AS status
+MATCH (c:Country)
+WHERE c.military_strength_score IS NOT NULL
+RETURN c.name AS country,
+       round(c.military_strength_score, 4) AS military_strength,
+       round(c.defense_spending_score, 4) AS spending_score,
+       round(c.arms_export_score, 4) AS arms_score,
+       c.nuclear_status AS nuclear,
+       c.un_p5 AS p5
+ORDER BY c.military_strength_score DESC LIMIT 10
 """
 
 
