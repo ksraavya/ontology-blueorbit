@@ -270,9 +270,9 @@ def compute_conflict_risk_score(years=range(2018, 2025)) -> int:
     finally:
         db.close()
 
-def compute_composite_threat_score() -> int:
+def compute_defense_composite_score() -> int:
     """
-    Computes a single composite threat score per country from all available
+    Computes a single composite defense score per country from all available
     defense score properties for fast profiling.
     """
     db = Neo4jConnection()
@@ -291,7 +291,7 @@ def compute_composite_threat_score() -> int:
         results = db.run_query(query)
 
         if not results:
-            logger.info("composite_threat_score: No eligible countries found")
+            logger.info("defense_composite_score: No eligible countries found")
             return 0
 
         update_rows = []
@@ -324,12 +324,12 @@ def compute_composite_threat_score() -> int:
         write_query = """
         UNWIND $rows AS row
         MATCH (c:Country {name: row.country})
-        SET c.composite_threat_score = row.score
+        SET c.defense_composite_score = row.score
         """
         db.run_query(write_query, {"rows": update_rows})
 
         count = len(update_rows)
-        logger.info("composite_threat_score: updated %d countries", count)
+        logger.info("defense_composite_score: updated %d countries", count)
         return count
     finally:
         db.close()
@@ -397,7 +397,7 @@ def compute_all_defense_scores() -> Dict[str, int]:
     results["conflict_risk_score"] = compute_conflict_risk_score() 
     results["military_strength_score"] = compute_military_strength_score() 
     results["defense_burden_score"] = compute_defense_burden_score() 
-    results["composite_threat_score"] = compute_composite_threat_score()
+    results["defense_composite_score"] = compute_defense_composite_score()
     
     logger.info("Defense analytics complete: %s", results) 
     return results 

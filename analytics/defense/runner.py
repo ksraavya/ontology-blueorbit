@@ -21,7 +21,7 @@ def run_defense_analytics() -> None:
 
     # Step 2: Compute derived relationships
     logger.info("--- Step 2: Computing derived relationships ---")
-    n_conflict = compute_high_conflict_edges(threshold=0.7, year=2024)
+    n_conflict = compute_high_conflict_edges(threshold=0.35, year=2024)
     n_influence = compute_arms_influence_edges(top_n=5, year=2024)
 
     logger.info(

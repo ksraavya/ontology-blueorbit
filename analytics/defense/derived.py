@@ -8,8 +8,7 @@ import logging
 
 from common.db import Neo4jConnection
 from common.graph_ops import GraphOps
-from common.intelligence.aggregation import max_value
-from common.intelligence.normalization import clamp, normalize_by_max
+from common.intelligence.normalization import clamp
 from common.ontology import ALIGNED_WITH, IS_HIGH_RISK_FOR, IS_INFLUENTIAL_TO
 
 logger = logging.getLogger(__name__)
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 _ = ALIGNED_WITH
 
 
-def compute_high_conflict_edges(threshold: float = 0.7, year: int = 2024) -> int:
+def compute_high_conflict_edges(threshold: float = 0.35, year: int = 2024) -> int:
     """
     Create IS_HIGH_RISK_FOR edges between high-conflict countries in same region.
     """
@@ -29,6 +28,7 @@ def compute_high_conflict_edges(threshold: float = 0.7, year: int = 2024) -> int
         WHERE c.conflict_risk_score >= $threshold
           AND other.conflict_risk_score >= $threshold
           AND c.name <> other.name
+          AND r IS NOT NULL
         RETURN c.name AS country_a, other.name AS country_b,
                r.name AS region,
                c.conflict_risk_score AS score_a,
@@ -66,10 +66,11 @@ def compute_high_conflict_edges(threshold: float = 0.7, year: int = 2024) -> int
 def compute_arms_influence_edges(top_n: int = 5, year: int = 2024) -> int:
     """
     Creates IS_INFLUENTIAL_TO relationships from top arms exporters
-    to countries they are co-mentioned with in hostile/cooperative context.
+    to countries in the same alliances (MEMBER_OF).
     """
     conn = Neo4jConnection()
     try:
+        # Step 1: Get top N exporters by arms_export_score
         query_top = """
         MATCH (c:Country)
         WHERE c.arms_export_score IS NOT NULL
@@ -83,48 +84,41 @@ def compute_arms_influence_edges(top_n: int = 5, year: int = 2024) -> int:
             exporter_name = exporter["country"]
             influence_score = float(exporter.get("score", 0.0) or 0.0)
 
-            query_partners = """
-            MATCH (exporter:Country {name: $exporter_name})-[co:CO_MENTIONED_WITH]-(partner:Country)
-            WHERE co.dominant_context IN ['hostile', 'cooperative']
-            RETURN partner.name AS partner,
-                   co.count AS mention_count,
-                   co.dominant_context AS context,
-                   $exporter_score AS influence_score
+            # Step 2: Find all countries in same alliances as this exporter
+            query_alliance_partners = """
+            MATCH (exporter:Country {name: $name})-[:MEMBER_OF]->(a:Alliance)<-[:MEMBER_OF]-(partner:Country)
+            WHERE partner.name <> $name
+            RETURN DISTINCT partner.name AS partner,
+                            a.name AS alliance,
+                            $score AS arms_score
             """
             partners = conn.run_query(
-                query_partners,
-                {"exporter_name": exporter_name, "exporter_score": influence_score},
+                query_alliance_partners,
+                {"name": exporter_name, "score": influence_score},
             )
 
+            seen_partners = set()
+            ops = GraphOps(conn)
             for partner in partners:
-                pair_conn = Neo4jConnection()
-                try:
-                    ops = GraphOps(pair_conn)
+                partner_name = partner["partner"]
+                if partner_name in seen_partners:
+                    continue
+                seen_partners.add(partner_name)
 
-                    mention_count = float(partner.get("mention_count", 0.0) or 0.0)
-                    mention_weight = clamp(mention_count / 50.0, 0.0, 1.0)
-
-                    final_influence = clamp(
-                        influence_score * 0.7 + mention_weight * 0.3,
-                        0.0,
-                        1.0,
-                    )
-
-                    ops.create_relationship(
-                        source=exporter_name,
-                        target=partner["partner"],
-                        rel_type=IS_INFLUENTIAL_TO,
-                        properties={
-                            "value": final_influence,
-                            "normalized_weight": final_influence,
-                            "confidence": 0.8,
-                            "year": year,
-                            "domain": "defense",
-                            "context": partner.get("context"),
-                        },
-                    )
-                finally:
-                    pair_conn.close()
+                final_influence = clamp(influence_score, 0.0, 1.0)
+                ops.create_relationship(
+                    source=exporter_name,
+                    target=partner_name,
+                    rel_type=IS_INFLUENTIAL_TO,
+                    properties={
+                        "value": final_influence,
+                        "normalized_weight": final_influence,
+                        "confidence": 0.8,
+                        "year": year,
+                        "domain": "defense",
+                        "context": partner.get("alliance"),
+                    },
+                )
                 created += 1
 
         logger.info("IS_INFLUENTIAL_TO (defense) edges: %d", created)

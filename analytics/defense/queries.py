@@ -140,7 +140,7 @@ def get_country_defense_profile(country: str) -> Optional[Dict[str, Any]]:
         OPTIONAL MATCH (imp)-[ia:IMPORTS_ARMS]->(yimp:Year)
         WHERE imp = c AND yimp.year >= 2018
         RETURN c.name AS country,
-               c.composite_threat_score AS composite_threat,
+               c.defense_composite_score AS composite_threat,
                c.military_strength_score AS military_strength,
                c.defense_spending_score AS spending_score,
                c.conflict_risk_score AS conflict_risk,
@@ -186,7 +186,7 @@ def get_country_defense_profile(country: str) -> Optional[Dict[str, Any]]:
             WITH c, reg, alliances, hostile_partners, latest_s, latest_cf,
                  avg(ia.dependency) AS avg_import_dep
             RETURN c.name AS country,
-                   c.composite_threat_score AS composite_threat,
+                   c.defense_composite_score AS composite_threat,
                    c.military_strength_score AS military_strength,
                    c.defense_spending_score AS spending_score,
                    c.conflict_risk_score AS conflict_risk,
@@ -219,7 +219,7 @@ def get_military_comparison(countries: List[str] | None = None,
         return _run("""
             MATCH (c:Country)
             WHERE c.name IN $countries
-              AND c.composite_threat_score IS NOT NULL
+              AND c.defense_composite_score IS NOT NULL
             OPTIONAL MATCH (c)-[ia:IMPORTS_ARMS]->(yia:Year)
             WHERE yia.year >= 2018
             WITH c, avg(ia.dependency) AS avg_import_dep
@@ -227,7 +227,7 @@ def get_military_comparison(countries: List[str] | None = None,
             WHERE yea.year >= 2018
             WITH c, avg_import_dep, avg(ea.dependency) AS avg_export_dep
             RETURN c.name AS country,
-                   round(c.composite_threat_score, 4) AS composite_threat,
+                   round(c.defense_composite_score, 4) AS composite_threat,
                    round(c.military_strength_score, 4) AS military_strength,
                    round(c.defense_spending_score, 4) AS spending_score,
                    round(c.conflict_risk_score, 4) AS conflict_risk,
@@ -237,12 +237,12 @@ def get_military_comparison(countries: List[str] | None = None,
                    c.un_p5 AS un_p5,
                    round(avg_export_dep * 100, 2) AS avg_export_share_pct,
                    round(avg_import_dep * 100, 2) AS avg_import_share_pct
-            ORDER BY c.composite_threat_score DESC
+            ORDER BY c.defense_composite_score DESC
         """, {"countries": countries})
     else:
         return _run("""
             MATCH (c:Country)
-            WHERE c.composite_threat_score IS NOT NULL
+            WHERE c.defense_composite_score IS NOT NULL
             OPTIONAL MATCH (c)-[ia:IMPORTS_ARMS]->(yia:Year)
             WHERE yia.year >= 2018
             WITH c, avg(ia.dependency) AS avg_import_dep
@@ -250,7 +250,7 @@ def get_military_comparison(countries: List[str] | None = None,
             WHERE yea.year >= 2018
             WITH c, avg_import_dep, avg(ea.dependency) AS avg_export_dep
             RETURN c.name AS country,
-                   round(c.composite_threat_score, 4) AS composite_threat,
+                   round(c.defense_composite_score, 4) AS composite_threat,
                    round(c.military_strength_score, 4) AS military_strength,
                    round(c.defense_spending_score, 4) AS spending_score,
                    round(c.conflict_risk_score, 4) AS conflict_risk,
@@ -260,7 +260,7 @@ def get_military_comparison(countries: List[str] | None = None,
                    c.un_p5 AS un_p5,
                    round(avg_export_dep * 100, 2) AS avg_export_share_pct,
                    round(avg_import_dep * 100, 2) AS avg_import_share_pct
-            ORDER BY c.composite_threat_score DESC
+            ORDER BY c.defense_composite_score DESC
             LIMIT $limit
         """, {"limit": limit})
 
@@ -278,13 +278,13 @@ def get_alliance_network(alliance: str | None = None) -> List[Dict[str, Any]]:
             WITH a, c, s
             RETURN a.name AS alliance,
                    c.name AS country,
-                   round(c.composite_threat_score, 4) AS composite_threat,
+                   round(c.defense_composite_score, 4) AS composite_threat,
                    round(c.military_strength_score, 4) AS military_strength,
                    c.nuclear_status AS nuclear_status,
                    c.un_p5 AS un_p5,
                    round(s.value, 0) AS spending_2023_usd_millions,
                    round(s.normalized_weight, 4) AS spending_weight
-            ORDER BY c.composite_threat_score DESC NULLS LAST
+            ORDER BY c.defense_composite_score DESC NULLS LAST
         """, {"alliance": alliance})
     else:
         return _run("""
@@ -293,7 +293,7 @@ def get_alliance_network(alliance: str | None = None) -> List[Dict[str, Any]]:
             WITH a.name AS alliance,
                  count(DISTINCT c) AS members,
                  sum(coalesce(s.value, 0)) AS total_spending_usd_millions,
-                 avg(c.composite_threat_score) AS avg_threat_score,
+                 avg(c.defense_composite_score) AS avg_threat_score,
                  avg(c.military_strength_score) AS avg_military_score,
                  count(CASE WHEN c.nuclear_status IS NOT NULL THEN 1 END)
                      AS nuclear_members
@@ -366,7 +366,7 @@ def get_threat_classification(year: int = 2022, limit: int = 20) -> List[Dict[st
                    AS defense_pct_of_gdp,
                system AS political_system,
                round(gov, 3) AS democracy_score,
-               round(c.composite_threat_score, 4) AS composite_threat,
+               round(c.defense_composite_score, 4) AS composite_threat,
                CASE
                    WHEN (s.value * 1e6) / best_g.value > 0.04 AND gov < 0.5
                    THEN 'HIGH RISK — autocracy on war footing'
@@ -383,18 +383,18 @@ def get_threat_classification(year: int = 2022, limit: int = 20) -> List[Dict[st
 
 def get_simulator_ready_countries(limit: int = 50) -> List[Dict[str, Any]]:
     """
-    All countries that have a composite_threat_score and are ready for simulation.
+    All countries that have a defense_composite_score and are ready for simulation.
     live_risk_score is included if present but NOT required.
     """
     return _run("""
         MATCH (c:Country)
-        WHERE c.composite_threat_score IS NOT NULL
+        WHERE c.defense_composite_score IS NOT NULL
         OPTIONAL MATCH (c)-[:MEMBER_OF]->(a:Alliance)
         OPTIONAL MATCH (c)-[:BELONGS_TO]->(reg:Region)
         WITH c, reg,
              collect(DISTINCT a.name) AS alliances
         RETURN c.name AS country,
-               round(c.composite_threat_score, 4) AS composite_threat,
+               round(c.defense_composite_score, 4) AS composite_threat,
                round(c.military_strength_score, 4) AS military_strength,
                round(c.conflict_risk_score, 4) AS conflict_risk,
                round(c.defense_spending_score, 4) AS spending_score,
@@ -404,6 +404,6 @@ def get_simulator_ready_countries(limit: int = 50) -> List[Dict[str, Any]]:
                c.un_p5 AS p5,
                alliances,
                reg.name AS region
-        ORDER BY c.composite_threat_score DESC
+        ORDER BY c.defense_composite_score DESC
         LIMIT $limit
     """, {"limit": limit})
