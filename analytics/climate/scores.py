@@ -70,9 +70,6 @@ def compute_climate_damage_score(years: list[int] | None = None) -> int:
 
     conn = Neo4jConnection()
     try:
-        # damage lives on the relationship value for EXPERIENCED edges
-        # where disaster_type is not Earthquake (those use count as value)
-        # Use r.value which stores damage_usd for EM-DAT rows
         query = """
             MATCH (c:Country)-[r:EXPERIENCED]->(e:ClimateEvent)
             WHERE e.year IN $years
@@ -115,7 +112,6 @@ def compute_climate_deaths_score(years: list[int] | None = None) -> int:
 
     conn = Neo4jConnection()
     try:
-        # Deaths stored as value on RESULTED_IN_FATALITIES relationships
         query = """
             MATCH (e:ClimateEvent)-[r:RESULTED_IN_FATALITIES]->(c:Country)
             WHERE e.year IN $years
@@ -154,7 +150,7 @@ def compute_climate_deaths_score(years: list[int] | None = None) -> int:
 def compute_climate_risk_score() -> int:
     """
     Composite score. Requires frequency, damage, deaths scores already written.
-    Must be called last in compute_all_climate_scores().
+    Writes alias for composite layer at the end.
     """
     conn = Neo4jConnection()
     try:
@@ -171,8 +167,7 @@ def compute_climate_risk_score() -> int:
         rows = conn.run_query(query)
         if not rows:
             logger.warning(
-                "compute_climate_risk_score: no countries with all three "
-                "component scores — run frequency/damage/deaths first"
+                "compute_climate_risk_score: no countries with all three component scores"
             )
             return 0
 
@@ -201,6 +196,18 @@ def compute_climate_risk_score() -> int:
             )
             updated += 1
 
+        # --- Claude Alias Mapping Layer ---
+        logger.info("compute_climate_risk_score: writing aliases for %d countries", updated)
+        conn.run_query("""
+            MATCH (c:Country)
+            WHERE c.climate_risk_score IS NOT NULL
+            SET c.climate_vulnerability_score = c.climate_risk_score,
+                c.disaster_exposure_score = c.disaster_frequency_score,
+                c.emissions_score = coalesce(c.climate_damage_score, 0.0),
+                c.resource_stress_score = coalesce(c.supply_chain_risk_score, 0.0)
+        """)
+        # ----------------------------------
+
         logger.info("compute_climate_risk_score: updated=%d", updated)
         return updated
     finally:
@@ -208,10 +215,6 @@ def compute_climate_risk_score() -> int:
 
 
 def compute_supply_chain_risk_score() -> int:
-    """
-    Reads existing DISRUPTS_SUPPLY_CHAIN relationships written by bridge.py.
-    Writes max disruption weight to c.supply_chain_risk_score.
-    """
     conn = Neo4jConnection()
     try:
         query = """
@@ -221,10 +224,7 @@ def compute_supply_chain_risk_score() -> int:
         """
         rows = conn.run_query(query)
         if not rows:
-            logger.warning(
-                "compute_supply_chain_risk_score: no DISRUPTS_SUPPLY_CHAIN edges found — "
-                "run bridge first"
-            )
+            logger.warning("compute_supply_chain_risk_score: no DISRUPTS_SUPPLY_CHAIN edges found")
             return 0
 
         updated = 0
@@ -253,37 +253,27 @@ def compute_supply_chain_risk_score() -> int:
 def compute_all_climate_scores(
     years: list[int] | None = None,
 ) -> dict[str, int]:
-    """
-    Run all score functions in strict dependency order.
-    compute_climate_risk_score() MUST run after the three component scores.
-    compute_supply_chain_risk_score() requires bridge.py to have run first.
-    """
     if years is None:
         years = list(range(2000, 2025))
 
     start = time.perf_counter()
     counts: dict[str, int] = {}
 
-    logger.info("compute_all_climate_scores: stage compute_disaster_frequency_score")
+    logger.info("compute_all_climate_scores: stage frequency")
     counts["disaster_frequency"] = compute_disaster_frequency_score(years)
 
-    logger.info("compute_all_climate_scores: stage compute_climate_damage_score")
+    logger.info("compute_all_climate_scores: stage damage")
     counts["climate_damage"] = compute_climate_damage_score(years)
 
-    logger.info("compute_all_climate_scores: stage compute_climate_deaths_score")
+    logger.info("compute_all_climate_scores: stage deaths")
     counts["climate_deaths"] = compute_climate_deaths_score(years)
 
-    # composite — must be after above three
-    logger.info("compute_all_climate_scores: stage compute_climate_risk_score")
+    logger.info("compute_all_climate_scores: stage risk (and aliases)")
     counts["climate_risk"] = compute_climate_risk_score()
 
-    # requires bridge edges to exist
-    logger.info("compute_all_climate_scores: stage compute_supply_chain_risk_score")
+    logger.info("compute_all_climate_scores: stage supply chain")
     counts["supply_chain_risk"] = compute_supply_chain_risk_score()
 
     elapsed = time.perf_counter() - start
-    logger.info(
-        "compute_all_climate_scores: done in %.2fs counts=%s",
-        elapsed, counts,
-    )
+    logger.info("compute_all_climate_scores: done in %.2fs counts=%s", elapsed, counts)
     return counts
