@@ -4,7 +4,7 @@ import pandas as pd
 
 
 def clean_milex_data(df: pd.DataFrame) -> pd.DataFrame:
-    from common.country_mapper import normalize_country
+    from common.entity_mapper import normalize_country
 
     # 2. Strip whitespace from 'country'
     df["country"] = df["country"].astype(str).str.strip()
@@ -58,7 +58,7 @@ def clean_milex_data(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def clean_arms_data(df: pd.DataFrame) -> pd.DataFrame:
-    from common.country_mapper import normalize_country
+    from common.entity_mapper import normalize_country
 
     # 2. Strip whitespace from 'country'
     df["country"] = df["country"].astype(str).str.strip()
@@ -107,7 +107,7 @@ def clean_arms_data(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def clean_acled_data(df: pd.DataFrame) -> pd.DataFrame:
-    from common.country_mapper import normalize_country
+    from common.entity_mapper import normalize_country
 
     # 2. Strip whitespace from 'country'
     df["country"] = df["country"].astype(str).str.strip()
@@ -154,4 +154,3 @@ def clean_acled_data(df: pd.DataFrame) -> pd.DataFrame:
 
     # 10. Returns the cleaned dataframe
     return df
-

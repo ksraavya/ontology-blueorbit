@@ -51,6 +51,7 @@ _CUSTOM_MAPPINGS: Dict[str, str] = {
     "republic of korea": "South Korea",
     "korea, north": "North Korea",
     "dprk": "North Korea",
+    "korea (south)": "South Korea",
 
     # --------------------------
     # Russia
