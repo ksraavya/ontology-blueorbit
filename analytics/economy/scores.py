@@ -314,7 +314,7 @@ def compute_inflation_stability(years: list[int] | None = None) -> int:
 
             instability = clamp(normalize_by_max(avg_inflation, 20.0), 0.0, 1.0)
             # stability = 1.0 - instability (implemented via diversification_score)
-            stability = diversification_score([instability])
+            stability = 1.0 - instability
 
             if trend == "increasing":
                 stability *= 0.7
