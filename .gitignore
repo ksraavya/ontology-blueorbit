@@ -9,3 +9,11 @@ data/processed/
 Untitled
 venv/
 .venv/
+.env.*
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store
+.idea/
+.vscode/
+*.log
