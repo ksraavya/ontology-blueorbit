@@ -1,8 +1,10 @@
 neo4j
 python-dotenv
 pycountry
+requests
 
 # upcoming modules
 fastapi
 uvicorn
 pandas
+openpyxl
