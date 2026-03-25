@@ -1,4 +1,8 @@
+pandas
+openpyxl
 neo4j
+fastapi
+uvicorn
 python-dotenv
 pycountry
 requests
@@ -7,8 +11,4 @@ scipy
 python-louvain
 pyarrow
 feedparser
-# upcoming modules
-fastapi
-uvicorn
-pandas
 openpyxl
