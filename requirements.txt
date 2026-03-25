@@ -6,6 +6,7 @@ networkx
 scipy
 python-louvain
 pyarrow
+feedparser
 # upcoming modules
 fastapi
 uvicorn
