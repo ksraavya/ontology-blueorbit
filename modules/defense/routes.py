@@ -36,6 +36,27 @@ def arms_top(limit: int = 10) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/arms/network")
+def arms_network(limit: int = 100) -> Dict[str, Any]:
+    """
+    Returns arms export relationships: who exports to whom.
+    """
+    try:
+        from common.db import Neo4jConnection
+        conn = Neo4jConnection()
+        query = """
+        MATCH (a:Country)-[r:IMPORTS_ARMS]-(b:Country)
+        RETURN a.name AS importer, b.name AS exporter, r.tiv_millions AS value
+        ORDER BY r.tiv_millions DESC
+        LIMIT $limit
+        """
+        result = conn.run_query(query, {"limit": limit})
+        conn.close()
+        return {"data": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/conflicts/top")
 def conflicts_top(limit: int = 10) -> Dict[str, Any]:
     try:
@@ -91,4 +112,3 @@ def conflicts(country: str) -> Dict[str, Any]:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
