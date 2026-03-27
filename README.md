@@ -7,7 +7,7 @@ It helps teams answer questions like **“What happens if one country sanctions 
 
 | Category | Technologies |
 |---|---|
-| Language | Python 3.x |
+| Language | Python 3.11+ |
 | API Framework | FastAPI, Uvicorn |
 | Database | Neo4j (graph database) |
 | Data & Analytics | pandas, scipy, networkx, pyarrow |
@@ -81,7 +81,12 @@ cd ontology-blueorbit
 ```bash
 python -m venv .venv
 source .venv/bin/activate        # macOS/Linux
-# .venv\Scripts\activate         # Windows (PowerShell)
+```
+
+Windows (PowerShell):
+
+```powershell
+.venv\Scripts\Activate.ps1
 ```
 
 ### 3) Install dependencies
