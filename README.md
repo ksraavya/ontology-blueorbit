@@ -140,5 +140,19 @@ curl -X POST "http://localhost:8000/simulate/" \
 ```
 
 ---
+## 👥 Meet the Team
+
+| Module | Core Responsibility | Lead Architect | GitHub |
+| :--- | :--- | :--- | :---: |
+| **📈 Economy** | Trade dependencies, GDP impact analysis, and economic vulnerability. | **Sraavya** | [![GH](https://img.shields.io/badge/GitHub-181717?logo=github&logoColor=white)](https://github.com/ksraavya) |
+| **🌪️ Climate** | Natural disaster modeling, resource scarcity, and migration risks. | **Bhumi** | [![GH](https://img.shields.io/badge/GitHub-181717?logo=github&logoColor=white)](https://github.com/Tbhumi04) |
+| **🌍 Geopolitics** | **System Integration (`engine.py`)**, Alliance mapping, and Intent Parsing. | **Manav** | [![GH](https://img.shields.io/badge/GitHub-181717?logo=github&logoColor=white)](https://github.com/manav329) |
+| **🛡️ Defence** | Military strength indexing, arms trade flows, and kinetic conflict escalation. | **Aditya** | [![GH](https://img.shields.io/badge/GitHub-181717?logo=github&logoColor=white)](https://github.com/Aaadddiii6) |
+
+---
+
+<p align="center">
+  Made with ❤️ + ☕ by <b>Team BlueOrbit</b>
+</p>
 
 If you are using this project for research or product integration, start with `/docs`, then explore domain-specific endpoints under `/economy`, `/defense`, `/geopolitics`, `/climate`, `/composite`, and `/simulate`.
