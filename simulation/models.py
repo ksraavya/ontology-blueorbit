@@ -143,6 +143,10 @@ class ScenarioRequest(BaseModel):
         default_factory=dict,
         description="Scenario-specific parameters extracted by LLM"
     )
+    parsed_by:      str | None           = Field(
+        default=None,
+        description="Who produced this parse: openai | gemini | openrouter | rules | structured"
+    )
 
 
 # =========================================================
@@ -205,6 +209,14 @@ class ScenarioResult(BaseModel):
         description="Score properties that were null during simulation"
     )
     computation_time_ms: float | None          = Field(default=None)
+    narrative_by:        str | None            = Field(
+        default=None,
+        description="Who wrote headline/summary: an LLM provider name or 'template'"
+    )
+    notes:               list[str]             = Field(
+        default_factory=list,
+        description="Engine notes shown to the user, e.g. year fallback used"
+    )
 
 
 # =========================================================
@@ -212,8 +224,16 @@ class ScenarioResult(BaseModel):
 # =========================================================
 
 class SimulateRequest(BaseModel):
-    """Raw API request from the user."""
+    """
+    Raw API request from the user.
+
+    Two modes:
+    - natural language: send `query`; the engine parses it (LLM, then rules).
+    - structured: send `scenario_type` (+ actor/target); parsing is skipped
+      entirely, so this mode works with no LLM key at all.
+    """
     query: str = Field(
+        default="",
         description="Natural language scenario query",
         examples=["What if US sanctions China?",
                   "What if Russia cuts gas to Europe?",
@@ -224,6 +244,13 @@ class SimulateRequest(BaseModel):
         default=1.0, ge=0.1, le=2.0,
         description="Override magnitude if user specifies partial/full/severe"
     )
+    scenario_type: ScenarioType | None = Field(
+        default=None, description="Structured mode: skip parsing and run this scenario"
+    )
+    actor:         str | None       = Field(default=None)
+    target:        str | None       = Field(default=None)
+    third_parties: list[str]        = Field(default_factory=list)
+    extra_params:  dict[str, Any]   = Field(default_factory=dict)
 
 
 class SimulateResponse(BaseModel):

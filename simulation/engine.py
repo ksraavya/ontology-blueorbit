@@ -1,19 +1,24 @@
 from __future__ import annotations
 
-import json
+"""
+Simulation engine.
+
+    query ──► parse (LLM chain ─► rule parser) ──► resolve names against graph
+          ──► resolve year against available data ──► deterministic handler
+          ──► narrative (LLM chain ─► template)
+
+Only parsing and narrative touch an LLM; every number comes from a handler
+reading Neo4j. Each LLM step has a non-LLM fallback (graceful degradation),
+so the engine still produces a full result with no API key at all.
+"""
+
 import logging
-import os
+import threading
 import time
+from typing import Optional
 
-import requests
-from dotenv import load_dotenv
-
-# Modern 2026 SDK
-from google import genai
-from google.genai import types
-
-load_dotenv()
-
+from common import llm
+from common.country_resolver import resolve_entity
 from simulation.models import (
     ScenarioRequest,
     ScenarioResult,
@@ -27,141 +32,141 @@ from simulation.prompts import (
     build_narrative_user_prompt,
 )
 from simulation.registry import get_handler
+from simulation.rule_parser import parse_rules
 
 logger = logging.getLogger(__name__)
-
-# ── Model config (Updated for 2026) ───────────────────────────
-# gemini-3-flash-preview is the current stable workhorse
-GEMINI_MODEL = "gemini-3-flash-preview" 
-# Use a high-availability fallback on OpenRouter
-OPENROUTER_MODEL = "google/gemini-3.1-pro-preview"
-
-# Initialize Client
-_GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-client = None
-if _GEMINI_API_KEY:
-    client = genai.Client(api_key=_GEMINI_API_KEY)
-
-
-# =========================================================
-# LLM CALL HELPERS
-# =========================================================
-
-def _call_gemini(system: str, user: str, max_tokens: int = 1000) -> str:
-    if not client:
-        raise RuntimeError("GEMINI_API_KEY not set")
-
-    # In 2026, we use 'thinking_config' to ensure clean JSON output
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=user,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            max_output_tokens=max_tokens,
-            temperature=0.1,
-            # 'minimal' thinking reduces latency and avoids 'thought' blocks in JSON
-            thinking_config=types.ThinkingConfig(
-                thinking_level=types.ThinkingLevel.MINIMAL 
-            )
-        ),
-    )
-
-    if not response.text:
-        raise RuntimeError("Empty Gemini response")
-
-    return response.text
-
-
-def _call_openrouter(system: str, user: str, max_tokens: int = 1000) -> str:
-    api_key = os.getenv("OPENROUTER_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY not set")
-
-    payload = {
-        "model": OPENROUTER_MODEL,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "max_tokens": max_tokens,
-        "temperature": 0.1,
-    }
-
-    response = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        json=payload,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://simulation-engine.local", # Use a valid URL string
-            "X-Title": "simulation-engine",
-        },
-        timeout=30,
-    )
-
-    response.raise_for_status()
-    data = response.json()
-    return data["choices"][0]["message"]["content"]
-
-
-def _call_llm(system: str, user: str, max_tokens: int = 1000) -> str:
-    try:
-        return _call_gemini(system, user, max_tokens)
-    except Exception as gemini_exc:
-        logger.warning(f"Gemini failed: {gemini_exc}, falling back to OpenRouter")
-        return _call_openrouter(system, user, max_tokens)
 
 
 # =========================================================
 # INTENT PARSING
 # =========================================================
 
-def parse_intent(raw_query: str, year: int = 2024, magnitude: float = 1.0) -> ScenarioRequest:
+def _parse_with_llm(raw_query: str, year: int, magnitude: float) -> Optional[ScenarioRequest]:
     try:
-        response_text = _call_llm(
-            system=INTENT_SYSTEM_PROMPT,
-            user=raw_query,
-            max_tokens=500,
-        )
+        res = llm.complete_json(INTENT_SYSTEM_PROMPT, raw_query, max_tokens=500)
+    except llm.LLMUnavailable as exc:
+        logger.info("LLM intent parse unavailable, using rules: %s", exc)
+        return None
+    parsed = res.data
+    try:
+        scenario = ScenarioType(str(parsed.get("scenario_type", "unknown")).strip().lower())
+    except ValueError:
+        scenario = ScenarioType.UNKNOWN
+    try:
+        mag = float(parsed.get("magnitude", magnitude))
+    except (TypeError, ValueError):
+        mag = magnitude
+    try:
+        yr = int(parsed.get("year", year))
+    except (TypeError, ValueError):
+        yr = year
+    third = parsed.get("third_parties") or []
+    extra = parsed.get("extra_params") or {}
+    return ScenarioRequest(
+        scenario_type=scenario,
+        actor=parsed.get("actor") or None,
+        target=parsed.get("target") or None,
+        third_parties=[t for t in third if isinstance(t, str)] if isinstance(third, list) else [],
+        magnitude=min(2.0, max(0.1, mag)),
+        year=min(2040, max(2020, yr)),
+        raw_query=raw_query,
+        extra_params=extra if isinstance(extra, dict) else {},
+        parsed_by=res.provider,
+    )
 
-        # Enhanced 2026 JSON cleaning
-        clean = response_text.strip()
-        if "```" in clean:
-            # Extract content between triple backticks
-            clean = clean.split("```")[1]
-            if clean.startswith("json"):
-                clean = clean[4:]
-        
-        parsed = json.loads(clean.strip())
 
-        return ScenarioRequest(
-            scenario_type=ScenarioType(parsed.get("scenario_type", "unknown")),
-            actor=parsed.get("actor"),
-            target=parsed.get("target"),
-            third_parties=parsed.get("third_parties", []),
-            magnitude=float(parsed.get("magnitude", magnitude)),
-            year=int(parsed.get("year", year)),
-            raw_query=raw_query,
-            extra_params=parsed.get("extra_params", {}),
-        )
+def parse_intent(raw_query: str, year: int = 2024, magnitude: float = 1.0) -> ScenarioRequest:
+    """LLM first; rule parser if the LLM is unavailable or returns unknown."""
+    parsed = _parse_with_llm(raw_query, year, magnitude)
+    if parsed is None or parsed.scenario_type == ScenarioType.UNKNOWN:
+        rules = parse_rules(raw_query, year=year, magnitude=magnitude)
+        if parsed is None or rules.scenario_type != ScenarioType.UNKNOWN:
+            parsed = rules
+    return _resolve_names(parsed)
 
-    except Exception as exc:
-        logger.warning(f"Intent parsing failed: {exc}")
-        return ScenarioRequest(
-            scenario_type=ScenarioType.UNKNOWN,
-            actor=None,
-            target=None,
-            raw_query=raw_query,
-            year=year,
-            magnitude=magnitude,
-        )
+
+def _resolve_names(req: ScenarioRequest) -> ScenarioRequest:
+    """Map 'Russia' -> 'Russian Federation' etc. to the spelling stored in Neo4j."""
+    req.actor = resolve_entity(req.actor) if req.actor else None
+    req.target = resolve_entity(req.target) if req.target else None
+    req.third_parties = [resolve_entity(t) or t for t in req.third_parties]
+    if isinstance(req.extra_params.get("realignment_target"), str):
+        req.extra_params["realignment_target"] = resolve_entity(req.extra_params["realignment_target"])
+    return req
+
+
+def _structured_request(api_request: SimulateRequest) -> ScenarioRequest:
+    req = ScenarioRequest(
+        scenario_type=api_request.scenario_type or ScenarioType.UNKNOWN,
+        actor=api_request.actor or None,
+        target=api_request.target or None,
+        third_parties=api_request.third_parties,
+        magnitude=api_request.magnitude,
+        year=api_request.year,
+        raw_query=api_request.query or _describe(api_request),
+        extra_params=api_request.extra_params,
+        parsed_by="structured",
+    )
+    return _resolve_names(req)
+
+
+def _describe(r: SimulateRequest) -> str:
+    stype = (r.scenario_type.value if r.scenario_type else "scenario").replace("_", " ")
+    parts = [p for p in (r.actor, r.target) if p]
+    return f"{stype}: {' → '.join(parts)}" if parts else stype
 
 
 # =========================================================
-# NARRATIVE GENERATION
+# YEAR RESOLUTION
+# =========================================================
+# Trade data (BACI) is published 1-2 years late. Handlers filter edges with
+# `r.year = $year`; asking for a year with no edges silently yields all-zero
+# deltas. So snap the requested year to the nearest year that has data.
+
+_years_lock = threading.Lock()
+_years_cache: tuple[float, list[int]] = (0.0, [])
+_YEARS_TTL_S = 600
+
+
+def available_trade_years() -> list[int]:
+    global _years_cache
+    loaded_at, years = _years_cache
+    if years and time.time() - loaded_at < _YEARS_TTL_S:
+        return years
+    with _years_lock:
+        try:
+            from common.db import Neo4jConnection
+            rows = Neo4jConnection().run_query(
+                "MATCH ()-[r:HAS_TRADE_VOLUME_WITH]->() WHERE r.year IS NOT NULL "
+                "RETURN DISTINCT toInteger(r.year) AS year ORDER BY year"
+            )
+            years = [int(r["year"]) for r in rows if r.get("year") is not None]
+        except Exception as exc:
+            logger.warning("Could not read available trade years: %s", exc)
+            years = []
+        _years_cache = (time.time(), years)
+        return years
+
+
+def _resolve_year(req: ScenarioRequest) -> Optional[str]:
+    years = available_trade_years()
+    if not years or req.year in years:
+        return None
+    earlier = [y for y in years if y <= req.year]
+    chosen = max(earlier) if earlier else min(years)
+    chosen = min(2040, max(2020, chosen))
+    if chosen == req.year:
+        return None
+    note = f"No trade data for {req.year}; used {chosen}, the nearest year in the graph."
+    req.year = chosen
+    return note
+
+
+# =========================================================
+# NARRATIVE
 # =========================================================
 
-def generate_narrative(result: ScenarioResult) -> tuple[str, str]:
+def generate_narrative(result: ScenarioResult) -> tuple[str, str, str]:
     user_prompt = build_narrative_user_prompt(
         scenario_type=result.scenario_type.value,
         actor=result.actor,
@@ -171,68 +176,83 @@ def generate_narrative(result: ScenarioResult) -> tuple[str, str]:
         cascade_effects=[c.model_dump() for c in result.cascade_effects],
         year=result.year,
     )
-
     try:
-        response_text = _call_llm(
-            system=NARRATIVE_SYSTEM_PROMPT,
-            user=user_prompt,
-            max_tokens=600,
-        )
-
-        clean = response_text.strip()
-        if "```" in clean:
-            clean = clean.split("```")[1]
-            if clean.startswith("json"):
-                clean = clean[4:]
-
-        parsed = json.loads(clean.strip())
-
-        return (
-            parsed.get("headline", _default_headline(result)),
-            parsed.get("summary", _default_summary(result)),
-        )
-
-    except Exception as exc:
-        logger.warning(f"Narrative generation failed: {exc}")
-        return _default_headline(result), _default_summary(result)
+        res = llm.complete_json(NARRATIVE_SYSTEM_PROMPT, user_prompt, max_tokens=700)
+        headline = res.data.get("headline") or _default_headline(result)
+        summary = res.data.get("summary") or _default_summary(result)
+        return str(headline), str(summary), res.provider
+    except llm.LLMUnavailable as exc:
+        logger.info("LLM narrative unavailable, using template: %s", exc)
+        return _default_headline(result), _default_summary(result), "template"
 
 
 def _default_headline(result: ScenarioResult) -> str:
     actor = result.actor or ""
     target = result.target or ""
     stype = result.scenario_type.value.replace("_", " ")
-
     if actor and target:
         return f"{stype.title()}: {actor} → {target}"
-    if target:
-        return f"{stype.title()} in {target}"
+    if target or actor:
+        return f"{stype.title()} — {target or actor}"
     return f"{stype.title()} scenario"
 
 
 def _default_summary(result: ScenarioResult) -> str:
+    """Template brief built only from computed numbers (no LLM)."""
     n = len(result.affected_countries)
-    return (
-        f"Simulation complete. {n} countries affected. "
-        f"Confidence: {result.confidence:.0%}. "
-        f"See affected_countries for projections."
-    )
+    if n == 0:
+        reason = "; ".join(result.missing_data) or "no graph data matched this scenario"
+        return f"No measurable impact could be computed ({reason})."
+
+    biggest: list[tuple[float, str, str, float]] = []
+    for c in result.affected_countries:
+        for d in c.score_deltas:
+            biggest.append((abs(d.delta), c.country, d.score_name, d.delta))
+    biggest.sort(reverse=True)
+
+    if not biggest or biggest[0][0] < 1e-4:
+        return (
+            f"The graph has no {result.year} data linking these countries for this scenario, "
+            f"so every projected change is zero. Check that the relevant pipeline has been loaded "
+            f"(see /health) or try another year."
+        )
+
+    direct = [c.country for c in result.affected_countries if c.impact_type == "direct"]
+    cascade = [c.country for c in result.affected_countries if c.impact_type != "direct"]
+    lines = [
+        f"{n} countries affected ({len(direct)} directly, {len(cascade)} through cascades), "
+        f"based on {result.year} graph data. Confidence {result.confidence:.0%}."
+    ]
+    if biggest:
+        moves = ", ".join(
+            f"{country} {name.replace('_score', '').replace('_', ' ')} {delta:+.3f}"
+            for _, country, name, delta in biggest[:3]
+        )
+        lines.append(f"Largest projected moves: {moves}.")
+    exposure = sum(c.exposure_usd or 0 for c in result.affected_countries)
+    if exposure > 0:
+        lines.append(f"Estimated economic exposure ≈ ${exposure / 1e9:,.1f}B.")
+    if result.cascade_effects:
+        lines.append("Key mechanism: " + result.cascade_effects[0].description)
+    return " ".join(lines)
 
 
 # =========================================================
 # UNKNOWN HANDLER
 # =========================================================
 
-def _handle_unknown(req: ScenarioRequest) -> ScenarioResult:
+def _handle_unknown(req: ScenarioRequest, reason: str) -> ScenarioResult:
     return ScenarioResult(
         scenario_type=req.scenario_type,
         actor=req.actor,
         target=req.target,
         raw_query=req.raw_query,
         year=req.year,
-        headline=f"Scenario '{req.scenario_type.value}' not implemented",
-        summary="No handler available for this scenario type.",
+        headline="Scenario not understood" if req.scenario_type == ScenarioType.UNKNOWN
+                 else f"Scenario '{req.scenario_type.value}' could not run",
+        summary=reason,
         confidence=0.0,
-        missing_data=["Handler missing"],
+        missing_data=[reason],
     )
 
 
@@ -243,32 +263,49 @@ def _handle_unknown(req: ScenarioRequest) -> ScenarioResult:
 def run_simulation(api_request: SimulateRequest) -> SimulateResponse:
     t0 = time.perf_counter()
 
-    parsed = parse_intent(
-        raw_query=api_request.query,
-        year=api_request.year,
-        magnitude=api_request.magnitude,
-    )
+    if api_request.scenario_type:
+        parsed = _structured_request(api_request)
+    else:
+        parsed = parse_intent(api_request.query, api_request.year, api_request.magnitude)
+
+    notes: list[str] = []
+    year_note = _resolve_year(parsed)
+    if year_note:
+        notes.append(year_note)
 
     handler = get_handler(parsed.scenario_type)
-
-    if handler:
+    if parsed.scenario_type == ScenarioType.UNKNOWN:
+        result = _handle_unknown(
+            parsed,
+            "Could not classify the question. Try naming the action and the countries, "
+            "e.g. 'What if the US sanctions China?', or use structured mode.",
+        )
+    elif handler is None:
+        result = _handle_unknown(parsed, f"No handler registered for {parsed.scenario_type.value}.")
+    else:
         try:
             result = handler(parsed)
         except Exception as exc:
-            logger.error(f"Handler failed: {exc}", exc_info=True)
-            result = _handle_unknown(parsed)
-    else:
-        result = _handle_unknown(parsed)
+            logger.error("Handler failed: %s", exc, exc_info=True)
+            result = _handle_unknown(parsed, f"Handler error: {exc}")
 
-    if not result.headline or not result.summary:
-        headline, summary = generate_narrative(result)
-        result.headline = headline
-        result.summary = summary
+    has_signal = any(
+        abs(d.delta) >= 1e-4 for c in result.affected_countries for d in c.score_deltas
+    )
+    if (not result.headline or not result.summary) and not has_signal:
+        # Nothing real to describe: an LLM given all-zero numbers invents a story.
+        result.headline = result.headline or _default_headline(result)
+        result.summary = result.summary or _default_summary(result)
+        result.narrative_by = "template"
+    elif not result.headline or not result.summary:
+        headline, summary, by = generate_narrative(result)
+        result.headline = result.headline or headline
+        result.summary = result.summary or summary
+        result.narrative_by = by
+    elif result.narrative_by is None:
+        result.narrative_by = "handler"
 
+    result.notes = notes + result.notes
     result.computation_time_ms = round((time.perf_counter() - t0) * 1000, 1)
 
-    return SimulateResponse(
-        request=api_request,
-        parsed=parsed,
-        result=result,
-    )
+    return SimulateResponse(request=api_request, parsed=parsed, result=result)

@@ -16,6 +16,11 @@ from simulation.models import (
 
 logger = logging.getLogger(__name__)
 
+# Smallest spillover delta reported as a cascade. Was 0.01, which filtered
+# out typical third-country effects (paper Table 10: dependency 0.25 gives
+# +0.0075). 0.005 keeps those while still dropping noise.
+CASCADE_MIN_DELTA = 0.005
+
 
 def _run(conn: Neo4jConnection, query: str, params: dict | None = None) -> list[dict]:
     return conn.run_query(query, params or {})
@@ -168,7 +173,7 @@ def run_sanctions(req: ScenarioRequest) -> ScenarioResult:
         for row in cascade_rows:
             dep = float(row.get("dependency") or 0.0)
             spill = clamp(dep * target_trade_delta * 0.5)
-            if spill < 0.01:
+            if spill < CASCADE_MIN_DELTA:
                 continue
             cascade_countries.append(AffectedCountry(
                 country=row["country"],
