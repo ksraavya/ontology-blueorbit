@@ -168,30 +168,25 @@ def compute_opposes_edges() -> int:
              MAX(r.alignment_score) AS score
         RETURN country_a, country_b, "diplomatic" AS basis
         """
-        diplomatic_rows = conn.run_query(diplomatic_query)
-
-        for row in diplomatic_rows:
-            country_a = row["country_a"]
-            country_b = row["country_b"]
-            pair_key = (country_a, country_b)
-            if pair_key in seen:
-                continue
-            seen.add(pair_key)
-
-            ops.create_relationship(
-                source=country_a,
-                target=country_b,
-                rel_type="OPPOSES",
-                properties={
-                    "value": clamp(1.0, 0.0, 1.0),
-                    "normalized_weight": clamp(1.0, 0.0, 1.0),
-                    "basis": row["basis"],
-                    "year": 2024,
-                    "confidence": clamp(0.8, 0.0, 1.0),
-                },
-            )
-            count += 1
-            diplomatic_written += 1
+        # One batched MERGE instead of create_relationship() per pair
+        # (3 round trips each, thousands of pairs): the per-row version ran
+        # 8+ minutes and timed out the connection. Same semantics: pairs
+        # already linked by the sanctions step are skipped.
+        del diplomatic_query  # kept above for documentation of the rule
+        rows = conn.run_query(
+            """
+            MATCH (a:Country)-[r:DIPLOMATIC_INTERACTION]->(b:Country)
+            WHERE r.alignment_score IS NOT NULL AND r.alignment_score < 0.2 AND a <> b
+            WITH DISTINCT a, b
+            WHERE NOT (a)-[:OPPOSES]->(b)
+            MERGE (a)-[o:OPPOSES]->(b)
+            SET o.value = 1.0, o.normalized_weight = 1.0, o.basis = 'diplomatic',
+                o.year = 2024, o.confidence = 0.8
+            RETURN count(o) AS n
+            """
+        )
+        diplomatic_written = int(rows[0]["n"]) if rows else 0
+        count += diplomatic_written
     finally:
         conn.close()
 

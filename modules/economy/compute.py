@@ -361,8 +361,13 @@ def compute_sanctions_metrics(rows: list[dict]) -> list[dict]:
     rel_type = get_relation_type(IMPOSED_SANCTIONS_ON)
     logger.debug("IMPOSED_SANCTIONS_ON ontology type: %s", rel_type)
  
+    # value = number of designated entities (sanctions intensity);
+    # normalized_weight = value / max, so Russia (thousands of designations)
+    # and Mali (a handful) are no longer weighted the same.
+    max_count = max((int(r.get("entity_count") or 1) for r in rows), default=1)
     out: list[dict] = []
     for row in rows:
+        count = int(row.get("entity_count") or 1)
         out.append({
             "source":       row["sanctioning_country"],
             "target":       row["sanctioned_country"],
@@ -370,8 +375,9 @@ def compute_sanctions_metrics(rows: list[dict]) -> list[dict]:
             "source_label": COUNTRY_LABEL,
             "target_label": COUNTRY_LABEL,
             "properties": {
-                "value":              1.0,
-                "normalized_weight":  1.0,
+                "value":              float(count),
+                "entity_count":       count,
+                "normalized_weight":  round(count / max_count, 4),
                 "year":               2024,
                 "source":             row.get("source", OFAC_SOURCE),
                 "currency":           "USD",
