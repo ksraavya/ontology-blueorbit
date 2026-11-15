@@ -113,6 +113,16 @@ LAYERS: dict[str, dict[str, Any]] = {
             ORDER BY value DESC LIMIT $limit""",
         "fmt": "{src} ↔ {dst}: {value_int} diplomatic events",
     },
+    "arms_trade": {
+        "label": "Arms trade (customs)", "domain": "defense", "color": "#ef4444", "unit": "USD",
+        "source": "CEPII BACI HS 93 + tanks + warships", "directed": True,
+        "query": _LATEST.format(rel="TRADES_ARMS_WITH") + """
+            MATCH (a:Country)-[r:TRADES_ARMS_WITH]->(b:Country) WHERE r.year = latest {country}
+            RETURN a.name AS src, b.name AS dst, a.iso_numeric AS src_iso, b.iso_numeric AS dst_iso,
+                   r.value AS value, r.year AS year, null AS extra
+            ORDER BY value DESC LIMIT $limit""",
+        "fmt": "{src} → {dst}: ${value_b} arms & ammunition ({year}, customs data)",
+    },
     "arms": {
         "label": "Arms-export influence", "domain": "defense", "color": "#b91c1c", "unit": "influence",
         "source": "SIPRI-derived", "directed": True,

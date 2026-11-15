@@ -101,6 +101,8 @@ def health() -> dict[str, Any]:
             _cache = (time.time(), snap)
         out["neo4j"]["status"] = "ok"
         out["graph"] = snap
+        meta = Neo4jConnection().run_query("MATCH (m:Meta {key: 'graph'}) RETURN m.built_at AS t")
+        out["built_at"] = meta[0]["t"] if meta else None
     except Exception as exc:
         out["neo4j"]["status"] = "error"
         out["neo4j"]["error"] = str(exc)[:300]

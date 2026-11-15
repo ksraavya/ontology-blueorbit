@@ -182,6 +182,12 @@ def step_indicators(ctx: "Ctx") -> None:
         log.info("  %-24s %s", code, state)
 
 
+def step_arms_trade(ctx: "Ctx") -> None:
+    """Bilateral arms trade from BACI customs data (HS 93, tanks, warships)."""
+    from modules.defense.arms_trade_baci import run
+    log.info("arms trade: %s", run())
+
+
 def step_analytics_economy(ctx: "Ctx") -> None:
     from analytics.economy.runner import run
     run(year=ctx.year)
@@ -231,6 +237,7 @@ STEPS: list[Step] = [
     Step("climate", step_climate, ["emdat"]),
     Step("cleanup", step_cleanup, []),
     Step("indicators", step_indicators, []),
+    Step("arms_trade", step_arms_trade, ["baci", "country_codes"]),
     Step("analytics_economy", step_analytics_economy, ["baci"]),
     Step("analytics_defense", step_analytics_defense, ["sipri_milex"]),
     Step("analytics_geopolitics", step_analytics_geopolitics, ["vdem", "gdelt", "unga"]),
@@ -320,6 +327,13 @@ def main() -> int:
         except Exception as exc:
             log.error("STEP %s FAILED: %s\n%s", s.name, exc, traceback.format_exc())
             results.append((s.name, f"FAILED: {exc}", time.perf_counter() - t0))
+
+    # Stamp the build time so the UI can show "last data update" honestly.
+    if any(state == "ok" for _, state, _ in results):
+        try:
+            Neo4jConnection().run_query("MERGE (m:Meta {key: 'graph'}) SET m.built_at = toString(datetime())")
+        except Exception as exc:
+            log.warning("could not stamp build time: %s", exc)
 
     print("\n" + "=" * 60)
     print("REBUILD SUMMARY")
