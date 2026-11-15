@@ -194,6 +194,12 @@ def step_sipri_transfers(ctx: "Ctx") -> None:
     log.info("SIPRI transfers: %s", run())
 
 
+def step_sipri_extra(ctx: "Ctx") -> None:
+    """SIPRI Top 100 companies, financial arms exports, Milex 1949-2025."""
+    from modules.defense.sipri_extra import run
+    log.info("SIPRI extra: %s", run())
+
+
 def step_analytics_economy(ctx: "Ctx") -> None:
     from analytics.economy.runner import run
     run(year=ctx.year)
@@ -245,6 +251,7 @@ STEPS: list[Step] = [
     Step("indicators", step_indicators, []),
     Step("arms_trade", step_arms_trade, ["baci", "country_codes"]),
     Step("sipri_transfers", step_sipri_transfers, ["sipri_trade_register"]),
+    Step("sipri_extra", step_sipri_extra, []),
     Step("analytics_economy", step_analytics_economy, ["baci"]),
     Step("analytics_defense", step_analytics_defense, ["sipri_milex"]),
     Step("analytics_geopolitics", step_analytics_geopolitics, ["vdem", "gdelt", "unga"]),

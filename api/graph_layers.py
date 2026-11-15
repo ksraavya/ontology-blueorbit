@@ -310,6 +310,13 @@ _PROFILE_QUERIES: dict[str, str] = {
         MATCH (c {name: $name})-[r:TRANSFERS_ARMS_TO]->(t:Country) WHERE r.year > hi - 10
         RETURN t.name AS country, sum(r.tiv) AS value, collect(r.weapons)[0][0..2] AS weapons
         ORDER BY value DESC LIMIT 15""",
+    "arms_companies": """
+        MATCH (co:ArmsCompany)-[:HEADQUARTERED_IN]->(c:Country {name: $name})
+        MATCH (co)-[r:HAS_ARMS_REVENUE]->()
+        WITH co, r ORDER BY r.year DESC
+        WITH co, head(collect(r)) AS last
+        RETURN co.name AS company, last.value AS value, last.year AS year, last.rank AS rank, last.arms_share AS arms_share
+        ORDER BY value DESC LIMIT 15""",
     "connections": """
         MATCH (c:Country {name: $name})-[r]-() RETURN type(r) AS type, count(*) AS n ORDER BY n DESC""",
     "risk_rank": """

@@ -95,12 +95,21 @@ CARDS: dict[str, list[dict[str, Any]]] = {
          "run": _bars("""MATCH ()-[x:TRADES_ARMS_WITH]->() WITH max(x.year) AS latest
                          MATCH (a:Country)-[r:TRADES_ARMS_WITH]->(b:Country) WHERE r.year = latest
                          RETURN a.name + ' → ' + b.name AS label, r.value AS value ORDER BY value DESC LIMIT 6""")},
+        {"id": "companies", "title": "Biggest arms companies", "kind": "bars", "unit": "USD millions", "source": "SIPRI Top 100",
+         "run": _bars("""MATCH (co:ArmsCompany)-[r:HAS_ARMS_REVENUE]->() WITH max(r.year) AS latest
+                         MATCH (co:ArmsCompany)-[r:HAS_ARMS_REVENUE {year: latest}]->()
+                         OPTIONAL MATCH (co)-[:HEADQUARTERED_IN]->(c:Country)
+                         RETURN co.name + coalesce(' · ' + c.iso2, '') AS label, r.value AS value ORDER BY value DESC LIMIT 6""")},
         {"id": "conflict", "title": "Conflict deaths (latest year)", "kind": "bars", "unit": "fatalities", "source": "ACLED",
          "run": _bars("""MATCH (:Country)-[x:HAS_CONFLICT_STATS]->(y0:Year) WITH max(y0.year) AS latest
                          MATCH (c:Country)-[r:HAS_CONFLICT_STATS]->(y:Year {year: latest})
                          RETURN c.name AS label, r.total_fatalities AS value ORDER BY value DESC LIMIT 6""")},
-        {"id": "arms_trend", "title": "Arms trade per year", "kind": "series", "unit": "$B", "source": "BACI customs data",
-         "run": _series([("Arms trade", "$B", _ARMS_BY_YEAR, 1e9)])},
+        {"id": "arms_trend", "title": "Arms market per year", "kind": "series", "unit": "per year", "source": "SIPRI Top 100 · BACI customs",
+         "run": _series([
+             ("Top-100 arms revenues", "$B", "MATCH (g:GlobalMetric {code: 'sipri_top100_total'}) UNWIND range(0, size(g.years) - 1) AS i RETURN g.years[i] AS x, g.values[i] AS y ORDER BY x", 1),
+             ("Major-arms transfers", "k TIV", "MATCH ()-[r:TRANSFERS_ARMS_TO]->() WHERE r.year >= 2002 RETURN r.year AS x, sum(r.tiv) AS y ORDER BY x", 1e3),
+             ("Arms trade (customs)", "$B", _ARMS_BY_YEAR, 1e9),
+         ])},
     ],
     "economy": [
         {"id": "exporters", "title": "Top exporters (latest year)", "kind": "bars", "unit": "USD", "source": "CEPII BACI",
