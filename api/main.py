@@ -55,6 +55,22 @@ try:
 except Exception as e:
     print(f"✗ Health routes failed: {e}")
  
+# ── Natural-language questions over the graph ─────────────────────────────────
+try:
+    from api.ask import router as ask_router
+    app.include_router(ask_router)
+    print("✓ Ask routes loaded")
+except Exception as e:
+    print(f"✗ Ask routes failed: {e}")
+
+# ── Home insight cards ────────────────────────────────────────────────────────
+try:
+    from api.insights import router as insights_router
+    app.include_router(insights_router)
+    print("✓ Insight routes loaded")
+except Exception as e:
+    print(f"✗ Insight routes failed: {e}")
+
 # ── Graph layers (map lines + choropleth metrics) ─────────────────────────────
 try:
     from api.graph_layers import router as graph_layers_router

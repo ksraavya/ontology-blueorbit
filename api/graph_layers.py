@@ -243,15 +243,15 @@ _PROFILE_QUERIES: dict[str, str] = {
     "export_partners": """
         MATCH ()-[x:EXPORTS_TO]->() WITH max(x.year) AS latest
         MATCH (c:Country {name: $name})-[r:EXPORTS_TO]->(p:Country) WHERE r.year = latest
-        RETURN p.name AS country, r.value AS value, r.year AS year ORDER BY value DESC LIMIT 6""",
+        RETURN p.name AS country, r.value AS value, r.year AS year ORDER BY value DESC LIMIT 15""",
     "import_partners": """
         MATCH ()-[x:EXPORTS_TO]->() WITH max(x.year) AS latest
         MATCH (p:Country)-[r:EXPORTS_TO]->(c:Country {name: $name}) WHERE r.year = latest
-        RETURN p.name AS country, r.value AS value, r.year AS year ORDER BY value DESC LIMIT 6""",
+        RETURN p.name AS country, r.value AS value, r.year AS year ORDER BY value DESC LIMIT 15""",
     "energy_suppliers": """
         MATCH ()-[x:IMPORTS_ENERGY_FROM]->() WITH max(x.year) AS latest
         MATCH (c:Country {name: $name})-[r:IMPORTS_ENERGY_FROM]->(p:Country) WHERE r.year = latest
-        RETURN p.name AS country, r.value AS value, r.dependency AS share ORDER BY value DESC LIMIT 5""",
+        RETURN p.name AS country, r.value AS value, r.dependency AS share ORDER BY value DESC LIMIT 15""",
     "trade_totals": """
         MATCH ()-[x:EXPORTS_TO]->() WITH max(x.year) AS latest
         MATCH (c:Country {name: $name})
@@ -267,10 +267,10 @@ _PROFILE_QUERIES: dict[str, str] = {
         RETURN s.name AS by, r.value AS entities""",
     "sanctions_imposed": """
         MATCH (c:Country {name: $name})-[r:IMPOSED_SANCTIONS_ON]->(t:Country)
-        RETURN t.name AS on, r.value AS entities ORDER BY entities DESC LIMIT 6""",
+        RETURN t.name AS on, r.value AS entities ORDER BY entities DESC LIMIT 15""",
     "aligned": """
         MATCH (c:Country {name: $name})-[r:ALIGNED_WITH]-(p:Country) WHERE r.vote_similarity IS NOT NULL
-        RETURN p.name AS country, max(r.vote_similarity) AS similarity ORDER BY similarity DESC LIMIT 6""",
+        RETURN p.name AS country, max(r.vote_similarity) AS similarity ORDER BY similarity DESC LIMIT 15""",
     "opposed": """
         MATCH (c:Country {name: $name})-[r:OPPOSES]-(p:Country)
         RETURN p.name AS country, max(coalesce(r.normalized_weight, r.value)) AS score ORDER BY score DESC LIMIT 5""",
@@ -280,7 +280,7 @@ _PROFILE_QUERIES: dict[str, str] = {
         ORDER BY members DESC LIMIT 1""",
     "diplomacy": """
         MATCH (c:Country {name: $name})-[r:DIPLOMATIC_INTERACTION]-(p:Country) WHERE p <> c
-        RETURN p.name AS country, count(r) AS events ORDER BY events DESC LIMIT 6""",
+        RETURN p.name AS country, count(r) AS events ORDER BY events DESC LIMIT 15""",
     "disasters": """
         MATCH (c:Country {name: $name})-[r]->(d)
         WHERE type(r) IN ['EXPERIENCED', 'AFFECTED_BY']
