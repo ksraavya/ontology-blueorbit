@@ -75,8 +75,8 @@ def _domain_split(c: Neo4jConnection) -> list[dict]:
 
 CARDS: dict[str, list[dict[str, Any]]] = {
     "overview": [
-        {"id": "top_risk", "title": "Top risk countries", "kind": "bars", "unit": "global risk (0–1)", "source": "Composite score",
-         "run": _bars("MATCH (c:Country) WHERE c.global_risk_score IS NOT NULL RETURN c.name AS label, c.global_risk_score AS value ORDER BY value DESC LIMIT 6")},
+        {"id": "top_risk", "title": "Top risk countries", "kind": "bars", "unit": "global risk (0–1), population ≥ 1M", "source": "Composite score",
+         "run": _bars("MATCH (c:Country) WHERE c.global_risk_score IS NOT NULL AND coalesce(c.population_m, 0) >= 1 RETURN c.name AS label, c.global_risk_score AS value ORDER BY value DESC LIMIT 6")},
         {"id": "trends", "title": "Relationship trends", "kind": "series", "unit": "per year", "source": "BACI customs data",
          "run": _series([("World trade", "$T", _TRADE_BY_YEAR, 1e12), ("Energy trade", "$B", _ENERGY_BY_YEAR, 1e9), ("Arms trade", "$B", _ARMS_BY_YEAR, 1e9)])},
         {"id": "domains", "title": "Graph data by domain", "kind": "split", "unit": "relationships", "source": "Neo4j count store",
@@ -87,7 +87,11 @@ CARDS: dict[str, list[dict[str, Any]]] = {
          "run": _bars("""MATCH (:Country)-[x:SPENDS_ON_DEFENSE]->(y0:Year) WITH max(y0.year) AS latest
                          MATCH (c:Country)-[r:SPENDS_ON_DEFENSE]->(y:Year {year: latest})
                          RETURN c.name AS label, coalesce(r.amount_usd_millions, r.value) AS value ORDER BY value DESC LIMIT 6""")},
-        {"id": "arms_flows", "title": "Biggest arms flows (latest year)", "kind": "bars", "unit": "USD", "source": "BACI HS 93 + tanks + warships",
+        {"id": "sipri_transfers", "title": "Biggest major-arms transfers (10 yrs)", "kind": "bars", "unit": "SIPRI TIV", "source": "SIPRI Arms Transfers Database",
+         "run": _bars("""MATCH ()-[x:TRANSFERS_ARMS_TO]->() WITH max(x.year) AS hi
+                         MATCH (a:Country)-[r:TRANSFERS_ARMS_TO]->(b:Country) WHERE r.year > hi - 10
+                         RETURN a.name + ' → ' + b.name AS label, sum(r.tiv) AS value ORDER BY value DESC LIMIT 6""")},
+        {"id": "arms_flows", "title": "Biggest arms flows (customs, latest year)", "kind": "bars", "unit": "USD", "source": "BACI HS 93 + tanks + warships",
          "run": _bars("""MATCH ()-[x:TRADES_ARMS_WITH]->() WITH max(x.year) AS latest
                          MATCH (a:Country)-[r:TRADES_ARMS_WITH]->(b:Country) WHERE r.year = latest
                          RETURN a.name + ' → ' + b.name AS label, r.value AS value ORDER BY value DESC LIMIT 6""")},

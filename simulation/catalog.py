@@ -31,7 +31,7 @@ _C: dict[T, tuple[str, str, Optional[str], Optional[str], str, str]] = {
     T.MILITARY_INTERVENTION:  ("defense", "Military intervention", "Intervening country", "Country intervened in", "country", "What if Turkey intervenes militarily in Syria?"),
     T.NUCLEAR_THREAT:         ("defense", "Nuclear threat", "Threatening country", "Threatened country (optional)", "country", "What if North Korea conducts a nuclear test?"),
     T.CYBER_ATTACK:           ("defense", "Cyber attack", "Attacker (optional)", "Victim country", "country", "What if Russia launches a cyber attack on the US grid?"),
-    T.ARMS_EMBARGO:           ("defense", "Arms embargo", "Embargoing supplier (optional)", "Embargoed country", "country", "What if the US imposes an arms embargo on Saudi Arabia?"),
+    T.ARMS_EMBARGO:           ("defense", "Arms embargo / supplier cut-off", "Supplier cutting exports (optional)", "Embargoed country (optional)", "country", "What if Russia stops its arms exports?"),
     T.DEFENSE_SPENDING_SURGE: ("defense", "Defense spending surge", "Country increasing spending", None, "none", "What if Japan doubles its defense budget?"),
     T.BORDER_CONFLICT:        ("defense", "Border conflict", "Country A", "Country B", "country", "What if India and China have a border clash?"),
     T.ALLIANCE_EXIT:          ("geopolitics", "Leave alliance", "Leaving country", "Alliance", "alliance", "What if Turkey leaves NATO?"),

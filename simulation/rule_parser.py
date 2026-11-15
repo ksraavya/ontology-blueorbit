@@ -27,7 +27,7 @@ RULES: list[tuple[T, str]] = [
     (T.SANCTIONS_REMOVAL, r"\b(lift|lifts|lifted|lifting|remove[sd]?|eases?|eased|drops?|ends?)\b.{0,30}\bsanction"),
     (T.SANCTIONS_COALITION, r"\b(coalition|jointly|together|allies|g7)\b.{0,50}\bsanction|\bsanction.{0,50}\b(coalition|jointly)"),
     (T.SANCTIONS, r"\bsanction"),
-    (T.ARMS_EMBARGO, r"arms embargo|weapons? (ban|embargo)|stops? (selling|supplying|sending) (arms|weapons)"),
+    (T.ARMS_EMBARGO, r"arms embargo|weapons? (ban|embargo)|stops? (selling|supplying|sending) (arms|weapons)|(stops?|halts?|cuts?|ends?|bans?)\b.{0,25}\b(arms|weapons?)\b.{0,20}\bexports?"),
     (T.EXPORT_BAN, r"export ban|bans? (the )?exports?|export controls?|bans? .{0,25}(chips?|semiconductors?|rare earths?|grain|wheat|lithium|fertili[sz]er)"),
     (T.TRADE_AGREEMENT_COLLAPSE, r"(trade (deal|agreement|pact)|\bfta\b).{0,30}(collapse|ends?|breaks?|terminat|scrap)|(collapse|end|scrap|terminat)\w*.{0,20}(trade deal|trade agreement|\bfta\b)|(leaves?|exits?|quits?) " + _BLOC_WORDS),
     (T.TRADE_AGREEMENT, r"(joins?|signs?|enters?) .{0,25}(" + _BLOC_WORDS + r"|trade (deal|agreement|pact)|\bfta\b|free trade)|free trade agreement"),
@@ -173,6 +173,10 @@ def _assign_roles(scenario: T, q: str, entities: list[FoundEntity]) -> tuple[Opt
         actors = [n for n in names if n != tgt] + [a.name for a in alliances]
         return (actors[0] if actors else None), tgt, actors[1:]
 
+    if scenario == T.ARMS_EMBARGO and re.search(r"(stops?|halts?|cuts?|ends?|bans?)\b.{0,25}\b(arms|weapons?)\b.{0,20}\bexports?", q) and names:
+        # "Russia stops its arms exports" = supplier cut-off: the country is the actor
+        return names[0], (names[1] if len(names) > 1 else None), names[2:]
+
     if scenario in (T.TRADE_AGREEMENT, T.TRADE_AGREEMENT_COLLAPSE):
         actor = names[0] if names else None
         target = alliances[0].name if alliances else (names[1] if len(names) > 1 else None)
@@ -208,3 +212,19 @@ def parse_rules(raw_query: str, year: int = 2024, magnitude: float = 1.0) -> Sce
         extra_params=_extras(scenario, q, entities),
         parsed_by="rules",
     )
+
+
+def parse_rules_multi(raw_query: str, year: int = 2024, magnitude: float = 1.0) -> list[ScenarioRequest]:
+    """
+    Compound questions without an LLM: split on "and" / ";" / "also" and keep
+    each part that is a scenario on its own. Falls back to one parse.
+    """
+    parts = [p.strip() for p in re.split(r"\band\b|;|\balso\b|\bwhile\b", raw_query) if p.strip()]
+    if len(parts) > 1:
+        reqs = [parse_rules(p, year=year, magnitude=magnitude) for p in parts]
+        good = [q for q in reqs if q.scenario_type != T.UNKNOWN and (q.actor or q.target or q.scenario_type in (T.STATE_FRAGILITY, T.GLOBAL_PANDEMIC, T.ENERGY_PRICE_SHOCK))]
+        if len(good) > 1:
+            for q in good:
+                q.raw_query = raw_query
+            return good[:3]
+    return [parse_rules(raw_query, year=year, magnitude=magnitude)]

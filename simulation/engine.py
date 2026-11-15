@@ -32,7 +32,7 @@ from simulation.prompts import (
     build_narrative_user_prompt,
 )
 from simulation.registry import get_handler
-from simulation.rule_parser import parse_rules
+from simulation.rule_parser import parse_rules, parse_rules_multi
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +41,7 @@ logger = logging.getLogger(__name__)
 # INTENT PARSING
 # =========================================================
 
-def _parse_with_llm(raw_query: str, year: int, magnitude: float) -> Optional[ScenarioRequest]:
-    try:
-        res = llm.complete_json(INTENT_SYSTEM_PROMPT, raw_query, max_tokens=500)
-    except llm.LLMUnavailable as exc:
-        logger.info("LLM intent parse unavailable, using rules: %s", exc)
-        return None
-    parsed = res.data
+def _request_from_dict(parsed: dict, raw_query: str, year: int, magnitude: float, provider: str) -> ScenarioRequest:
     try:
         scenario = ScenarioType(str(parsed.get("scenario_type", "unknown")).strip().lower())
     except ValueError:
@@ -71,18 +65,38 @@ def _parse_with_llm(raw_query: str, year: int, magnitude: float) -> Optional[Sce
         year=min(2040, max(2020, yr)),
         raw_query=raw_query,
         extra_params=extra if isinstance(extra, dict) else {},
-        parsed_by=res.provider,
+        parsed_by=provider,
     )
 
 
-def parse_intent(raw_query: str, year: int = 2024, magnitude: float = 1.0) -> ScenarioRequest:
-    """LLM first; rule parser if the LLM is unavailable or returns unknown."""
+def _parse_with_llm(raw_query: str, year: int, magnitude: float) -> Optional[list[ScenarioRequest]]:
+    try:
+        res = llm.complete_json(INTENT_SYSTEM_PROMPT, raw_query, max_tokens=700)
+    except llm.LLMUnavailable as exc:
+        logger.info("LLM intent parse unavailable, using rules: %s", exc)
+        return None
+    data = res.data
+    items = data.get("scenarios") if isinstance(data.get("scenarios"), list) else [data]
+    reqs = [_request_from_dict(d, raw_query, year, magnitude, res.provider) for d in items[:3] if isinstance(d, dict)]
+    return reqs or None
+
+
+def parse_intents(raw_query: str, year: int = 2024, magnitude: float = 1.0) -> list[ScenarioRequest]:
+    """
+    LLM first (may return several scenarios for a compound question);
+    rule parser if the LLM is unavailable or understood nothing.
+    """
     parsed = _parse_with_llm(raw_query, year, magnitude)
-    if parsed is None or parsed.scenario_type == ScenarioType.UNKNOWN:
-        rules = parse_rules(raw_query, year=year, magnitude=magnitude)
-        if parsed is None or rules.scenario_type != ScenarioType.UNKNOWN:
-            parsed = rules
-    return _resolve_names(parsed)
+    known = [p for p in (parsed or []) if p.scenario_type != ScenarioType.UNKNOWN]
+    if not known:
+        rules = parse_rules_multi(raw_query, year=year, magnitude=magnitude)
+        known = [r for r in rules if r.scenario_type != ScenarioType.UNKNOWN] or (parsed or rules)[:1]
+    return [_resolve_names(p) for p in known]
+
+
+def parse_intent(raw_query: str, year: int = 2024, magnitude: float = 1.0) -> ScenarioRequest:
+    """First scenario only (kept for /simulate/parse-only and older callers)."""
+    return parse_intents(raw_query, year, magnitude)[0]
 
 
 def _resolve_names(req: ScenarioRequest) -> ScenarioRequest:
@@ -257,6 +271,102 @@ def _handle_unknown(req: ScenarioRequest, reason: str) -> ScenarioResult:
 
 
 # =========================================================
+# COMPOUND SCENARIOS
+# =========================================================
+
+_SEV_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+
+def _merge_results(results: list[ScenarioResult]) -> ScenarioResult:
+    """
+    Combine several scenario results into one: per country, deltas on the same
+    score are summed (projected value recomputed from the current value and
+    clamped to 0..1); severity is the worst of the parts; exposure is summed.
+    Each part is also kept in `parts` so the UI can show them separately.
+    """
+    from common.intelligence.normalization import clamp
+    from simulation.models import AffectedCountry, ScoreDelta
+
+    by_country: dict[str, dict] = {}
+    for res in results:
+        for ac in res.affected_countries:
+            slot = by_country.setdefault(ac.country, {"ac": ac, "deltas": {}, "summaries": [], "exposure": 0.0, "sev": ac.severity, "direct": False})
+            for d in ac.score_deltas:
+                cur = slot["deltas"].get(d.score_name)
+                if cur is None:
+                    slot["deltas"][d.score_name] = [d.current, d.delta, d.confidence]
+                else:
+                    cur[1] += d.delta
+                    cur[2] = min(cur[2], d.confidence)
+            slot["summaries"].append(ac.summary)
+            slot["exposure"] += ac.exposure_usd or 0.0
+            if _SEV_RANK.get(ac.severity, 0) > _SEV_RANK.get(slot["sev"], 0):
+                slot["sev"] = ac.severity
+            slot["direct"] = slot["direct"] or ac.impact_type == "direct"
+
+    merged: list[AffectedCountry] = []
+    for country, slot in by_country.items():
+        deltas = []
+        for name, (current, delta, conf) in slot["deltas"].items():
+            delta = max(-1.0, min(1.0, delta))
+            deltas.append(ScoreDelta(
+                score_name=name, current=round(current, 4), delta=round(delta, 4),
+                projected=round(clamp(current + delta), 4),
+                direction="increase" if delta > 0.001 else "decrease" if delta < -0.001 else "unchanged",
+                confidence=conf,
+            ))
+        merged.append(AffectedCountry(
+            country=country,
+            impact_type="direct" if slot["direct"] else "cascade",
+            severity=slot["sev"],
+            score_deltas=deltas,
+            exposure_usd=slot["exposure"] or None,
+            summary=" ".join(dict.fromkeys(slot["summaries"])),
+        ))
+    # rank by the SIZE of the changes: opposite-sign deltas must not cancel out
+    merged.sort(key=lambda a: sum(abs(d.delta) for d in a.score_deltas), reverse=True)
+
+    first = results[0]
+    parts = [{
+        "scenario_type": r.scenario_type.value, "actor": r.actor, "target": r.target,
+        "headline": r.headline, "countries": len(r.affected_countries), "confidence": r.confidence,
+        "missing_data": r.missing_data,
+    } for r in results]
+    return ScenarioResult(
+        scenario_type=first.scenario_type,
+        actor=first.actor,
+        target=first.target,
+        raw_query=first.raw_query,
+        year=first.year,
+        headline="",
+        summary="",
+        affected_countries=merged,
+        cascade_effects=[c for r in results for c in r.cascade_effects],
+        data_sources=list(dict.fromkeys(src for r in results for src in r.data_sources)),
+        confidence=min(r.confidence for r in results),
+        missing_data=list(dict.fromkeys(m for r in results for m in r.missing_data)),
+        parts=parts,
+    )
+
+
+def _run_one(parsed: ScenarioRequest) -> ScenarioResult:
+    handler = get_handler(parsed.scenario_type)
+    if parsed.scenario_type == ScenarioType.UNKNOWN:
+        return _handle_unknown(
+            parsed,
+            "Could not classify the question. Try naming the action and the countries, "
+            "e.g. 'What if the US sanctions China?', or use structured mode.",
+        )
+    if handler is None:
+        return _handle_unknown(parsed, f"No handler registered for {parsed.scenario_type.value}.")
+    try:
+        return handler(parsed)
+    except Exception as exc:
+        logger.error("Handler failed: %s", exc, exc_info=True)
+        return _handle_unknown(parsed, f"Handler error: {exc}")
+
+
+# =========================================================
 # MAIN ENTRY POINT
 # =========================================================
 
@@ -264,30 +374,30 @@ def run_simulation(api_request: SimulateRequest) -> SimulateResponse:
     t0 = time.perf_counter()
 
     if api_request.scenario_type:
-        parsed = _structured_request(api_request)
+        parsed_list = [_structured_request(api_request)]
     else:
-        parsed = parse_intent(api_request.query, api_request.year, api_request.magnitude)
+        parsed_list = parse_intents(api_request.query, api_request.year, api_request.magnitude)
 
     notes: list[str] = []
-    year_note = _resolve_year(parsed)
-    if year_note:
-        notes.append(year_note)
+    for p in parsed_list:
+        year_note = _resolve_year(p)
+        if year_note and year_note not in notes:
+            notes.append(year_note)
 
-    handler = get_handler(parsed.scenario_type)
-    if parsed.scenario_type == ScenarioType.UNKNOWN:
-        result = _handle_unknown(
-            parsed,
-            "Could not classify the question. Try naming the action and the countries, "
-            "e.g. 'What if the US sanctions China?', or use structured mode.",
-        )
-    elif handler is None:
-        result = _handle_unknown(parsed, f"No handler registered for {parsed.scenario_type.value}.")
+    results = [_run_one(p) for p in parsed_list]
+    for r in results:
+        # Parts that failed for lack of data still explain themselves in the merged view.
+        if not r.affected_countries and r.summary:
+            notes.append(f"{r.scenario_type.value.replace('_', ' ')}: {r.summary}")
+    if len(results) == 1:
+        result = results[0]
     else:
-        try:
-            result = handler(parsed)
-        except Exception as exc:
-            logger.error("Handler failed: %s", exc, exc_info=True)
-            result = _handle_unknown(parsed, f"Handler error: {exc}")
+        working = [r for r in results if r.affected_countries] or results[:1]
+        result = _merge_results(working)
+        if len(working) > 1:
+            result.headline = ""   # let the narrative describe the combined picture
+            result.summary = ""
+    parsed = parsed_list[0]
 
     has_signal = any(
         abs(d.delta) >= 1e-4 for c in result.affected_countries for d in c.score_deltas
@@ -308,4 +418,4 @@ def run_simulation(api_request: SimulateRequest) -> SimulateResponse:
     result.notes = notes + result.notes
     result.computation_time_ms = round((time.perf_counter() - t0) * 1000, 1)
 
-    return SimulateResponse(request=api_request, parsed=parsed, result=result)
+    return SimulateResponse(request=api_request, parsed=parsed, result=result, parsed_parts=parsed_list)

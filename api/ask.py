@@ -83,6 +83,12 @@ REL_METRICS: dict[str, tuple[str, str]] = {
                            "MATCH (:Country)-[r:IMPORTS_ENERGY_FROM]->(c:Country) WHERE r.year = latest WITH c, sum(r.value) AS value, latest"),
     "arms_imports_usd": ("Arms imports (USD, customs)", _LATEST.format(rel="TRADES_ARMS_WITH") +
                          "MATCH (:Country)-[r:TRADES_ARMS_WITH]->(c:Country) WHERE r.year = latest WITH c, sum(r.value) AS value, latest"),
+    "arms_imports_tiv_10y": ("Major-arms imports, last 10 years (SIPRI TIV)",
+                             "MATCH ()-[x:TRANSFERS_ARMS_TO]->() WITH max(x.year) AS latest "
+                             "MATCH ()-[r:TRANSFERS_ARMS_TO]->(c:Country) WHERE r.year > latest - 10 WITH c, sum(r.tiv) AS value, latest"),
+    "arms_exports_tiv_10y": ("Major-arms exports, last 10 years (SIPRI TIV)",
+                             "MATCH ()-[x:TRANSFERS_ARMS_TO]->() WITH max(x.year) AS latest "
+                             "MATCH (c:Country)-[r:TRANSFERS_ARMS_TO]->() WHERE r.year > latest - 10 WITH c, sum(r.tiv) AS value, latest"),
     "arms_exports_usd": ("Arms exports (USD, customs)", _LATEST.format(rel="TRADES_ARMS_WITH") +
                          "MATCH (c:Country)-[r:TRADES_ARMS_WITH]->(:Country) WHERE r.year = latest WITH c, sum(r.value) AS value, latest"),
     "defense_spending_usd_m": ("Defence spending (USD millions, SIPRI)",
@@ -101,7 +107,8 @@ REL_METRICS: dict[str, tuple[str, str]] = {
 RELATIONS: dict[str, tuple[str, str, str, bool, str]] = {
     "trade":      ("EXPORTS_TO", "exports to", "r.value", True, "USD"),
     "energy":     ("EXPORTS_ENERGY_TO", "supplies energy to", "r.value", True, "USD"),
-    "arms_trade": ("TRADES_ARMS_WITH", "sells arms to", "r.value", True, "USD"),
+    "arms_trade": ("TRADES_ARMS_WITH", "sells arms to (customs data)", "r.value", True, "USD"),
+    "arms_transfers": ("TRANSFERS_ARMS_TO", "delivers major arms to (SIPRI, last 10 years)", "r.tiv", "decade", "SIPRI TIV"),
     "sanctions":  ("IMPOSED_SANCTIONS_ON", "sanctions", "r.value", False, "designated entities"),
     "dependency": ("HAS_TRADE_DEPENDENCY_ON", "depends on (trade share)", "r.dependency", True, "share"),
     "alignment":  ("ALIGNED_WITH", "votes with at the UN", "r.vote_similarity", False, "similarity"),
@@ -124,7 +131,9 @@ TOOLS_DOC = f"""Tools (pick exactly one):
 ROUTER_PROMPT = f"""You translate a question about countries into ONE tool call over a geopolitical knowledge graph.
 {TOOLS_DOC}
 Examples:
-"which country imports the most arms from the USA" -> {{"tool":"partners","args":{{"country":"United States","relation":"arms_trade","direction":"out","limit":10}}}}
+"which country imports the most arms from the USA" -> {{"tool":"partners","args":{{"country":"United States","relation":"arms_transfers","direction":"out","limit":10}}}}
+"who supplies weapons to India" -> {{"tool":"partners","args":{{"country":"India","relation":"arms_transfers","direction":"in","limit":10}}}}
+(prefer arms_transfers = SIPRI major weapons for arms questions; arms_trade = customs data, mostly small arms and ammunition)
 "which country has the most energy needs" -> {{"tool":"rank_countries","args":{{"metric":"energy_imports_usd","order":"desc","limit":10}}}}
 "most indebted governments" -> {{"tool":"rank_countries","args":{{"metric":"gov_debt_pct_gdp","order":"desc","limit":10,"min_population_m":1}}}}
 "who supplies energy to Germany" -> {{"tool":"partners","args":{{"country":"Germany","relation":"energy","direction":"in","limit":10}}}}
@@ -135,6 +144,8 @@ ANSWER_PROMPT = """You are an intelligence analyst. Answer the question in 2-4 s
 (they come from a knowledge graph built from World Bank, IMF, SIPRI, CEPII BACI, ACLED, GDELT, UN votes, OFAC, EM-DAT).
 Name countries and quote the numbers with their units, rounded for reading: money as $1.8B / $410B / $2.3T,
 percentages with one decimal, scores with two decimals. Mention the year when given.
+SIPRI TIV (trend-indicator value) measures military capability transferred, NOT money: write "11,706 TIV", never "$".
+If the value meaning says "last 10 years", describe it as a 10-year total, not as a single year.
 If the rows do not answer the question, say exactly what they show instead.
 Never invent figures. Reply as JSON: {"answer": "..."}"""
 
@@ -191,8 +202,12 @@ def run_tool(tool: str, args: dict[str, Any]) -> dict[str, Any]:
         direction = "in" if str(args.get("direction", "out")).lower() == "in" else "out"
         limit = _limit(args.get("limit"))
         pattern = "(c:Country {name: $country})-[r:%s]->(p:Country)" if direction == "out" else "(p:Country)-[r:%s]->(c:Country {name: $country})"
-        year_filter = _LATEST.format(rel=rel_type) if latest else ""
-        where = "WHERE r.year = latest" if latest else ""
+        if latest == "decade":   # SIPRI: sum the last 10 years (deliveries are lumpy)
+            year_filter = _LATEST.format(rel=rel_type)
+            where = "WHERE r.year > latest - 10"
+        else:
+            year_filter = _LATEST.format(rel=rel_type) if latest else ""
+            where = "WHERE r.year = latest" if latest else ""
         q = (f"{year_filter}MATCH {pattern % rel_type} {where} "
              f"WITH p, sum({value_expr}) AS value{', latest' if latest else ''} "
              f"RETURN p.name AS partner, value{', latest AS year' if latest else ', null AS year'} "

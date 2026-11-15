@@ -125,7 +125,7 @@ def run_gdp_shock(req: ScenarioRequest) -> ScenarioResult:
         # Trade partner cascade
         partner_rows = _run(conn, """
             MATCH (other:Country)-[r:HAS_TRADE_DEPENDENCY_ON]->(c:Country {name: $target})
-            WHERE r.year = $year AND r.dependency >= 0.08
+            WHERE coalesce(other.population_m, 0) >= 1 AND r.year = $year AND r.dependency >= 0.08
             RETURN other.name AS country,
                    r.dependency AS dependency,
                    other.trade_vulnerability_score AS trade_vuln
@@ -440,7 +440,7 @@ def run_export_ban(req: ScenarioRequest) -> ScenarioResult:
         # Other countries that also rely on this commodity from actor
         other_importers = _run(conn, """
             MATCH (other:Country)-[r:HAS_TRADE_DEPENDENCY_ON]->(a:Country {name: $actor})
-            WHERE r.year = $year AND r.dependency >= 0.10 AND other.name <> $target
+            WHERE coalesce(other.population_m, 0) >= 1 AND r.year = $year AND r.dependency >= 0.10 AND other.name <> $target
             RETURN other.name AS country,
                    r.dependency AS dependency,
                    other.trade_vulnerability_score AS trade_vuln

@@ -217,6 +217,10 @@ class ScenarioResult(BaseModel):
         default_factory=list,
         description="Engine notes shown to the user, e.g. year fallback used"
     )
+    parts:               list[dict[str, Any]]  = Field(
+        default_factory=list,
+        description="Compound questions: one entry per scenario that was combined"
+    )
 
 
 # =========================================================
@@ -258,3 +262,4 @@ class SimulateResponse(BaseModel):
     request:  SimulateRequest
     parsed:   ScenarioRequest
     result:   ScenarioResult
+    parsed_parts: list[ScenarioRequest] = Field(default_factory=list)

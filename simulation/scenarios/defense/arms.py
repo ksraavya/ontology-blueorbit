@@ -230,122 +230,183 @@ def run_military_intervention(req: ScenarioRequest) -> ScenarioResult:
 
 def run_arms_embargo(req: ScenarioRequest) -> ScenarioResult:
     """
-    Scenario: arms embargo imposed on target by actor (or coalition).
+    Two modes, both computed from SIPRI arms-transfer data (TRANSFERS_ARMS_TO,
+    TIV delivered over the last 10 years of the register):
 
-    Logic:
-    - Target's military_strength_score degrades over time (no new weapons)
-    - Target's overall_vulnerability_score rises (less capable of defense)
-    - Actor's arms_export_score falls slightly (lost market)
-    - If target has active conflict, conflict_risk may rise
+    1. Supplier cut-off (actor only), e.g. "What if Russia stops its arms exports?"
+       Every recipient of the actor's arms is affected in proportion to its
+       DEPENDENCY: the share of its major-arms imports that came from the actor.
+    2. Embargo on a country (target, optional actor), e.g. "US arms embargo on
+       Saudi Arabia". The target's hit scales with the share of its imports
+       supplied by the embargoing side (all suppliers if no actor is named).
 
-    Reads:
-        military_strength_score, arms_export_score, conflict_risk_score,
-        EXPORTS_ARMS, IMPORTS_ARMS
+    Score deltas = dependency x coefficient x magnitude (coefficients documented
+    in-line), so a country that buys 80% of its arms from the supplier moves
+    far more than one that buys 5%; the old version applied a flat -0.15.
+
+    Reads: TRANSFERS_ARMS_TO, military_strength_score, overall_vulnerability_score,
+           conflict_risk_score, arms_export_score
     """
-    actor  = req.actor
+    actor = req.actor
     target = req.target
-    mag    = req.magnitude
-    year   = req.year
+    mag = req.magnitude
+    K_MIL, K_VULN, K_CONFLICT = 0.30, 0.25, 0.10   # per unit of dependency
 
-    if not target:
-        return _empty_result(req, "arms_embargo requires a target country")
+    if not actor and not target:
+        return _empty_result(req, "arms_embargo needs a supplier (actor) or an embargoed country (target)")
 
     conn = Neo4jConnection()
     try:
-        target_rows = _run(conn, """
-            MATCH (c:Country {name: $name})
-            RETURN c.military_strength_score AS military,
-                   c.conflict_risk_score AS conflict_risk,
-                   c.overall_vulnerability_score AS vulnerability,
-                   c.defense_spending_score AS defense_spend
-        """, {"name": target})
-        tr = target_rows[0] if target_rows else {}
+        win = _run(conn, "MATCH ()-[r:TRANSFERS_ARMS_TO]->() RETURN max(r.year) AS hi")
+        hi = (win[0].get("hi") if win else None)
+        if hi is None:
+            return _empty_result(req, "No SIPRI arms-transfer data in the graph (load data/raw/sipri_trade_register.csv)")
+        lo = int(hi) - 9
+        params = {"lo": lo, "hi": int(hi)}
 
-        # Who currently exports arms to target?
-        supplier_rows = _run(conn, """
-            MATCH (supplier:Country)-[r:EXPORTS_ARMS]->(y:Year)
-            WHERE supplier.name = $actor OR $actor IS NULL
-            RETURN supplier.name AS country,
-                   supplier.arms_export_score AS arms_export,
-                   r.normalized_weight AS weight
-            ORDER BY r.normalized_weight DESC
-            LIMIT 5
-        """, {"actor": actor})
+        affected: list[AffectedCountry] = []
+        cascades: list[CascadeEffect] = []
 
-        target_military_delta  = -clamp(0.15 * mag)
-        target_vuln_delta      = clamp(0.20 * mag)
-        current_conflict = float(tr.get("conflict_risk") or 0.0)
-        # If already in conflict, embargo makes it more dangerous
-        target_conflict_delta  = clamp(0.10 * mag) if current_conflict > 0.3 else 0.0
+        if actor and not target:
+            # ── Mode 1: supplier cut-off ──────────────────────────────────
+            rows = _run(conn, """
+                MATCH (s {name: $actor})-[r:TRANSFERS_ARMS_TO]->(c:Country)
+                WHERE r.year >= $lo AND r.year <= $hi
+                WITH c, sum(r.tiv) AS from_actor, collect(r.weapons) AS w
+                MATCH (any)-[t:TRANSFERS_ARMS_TO]->(c) WHERE t.year >= $lo AND t.year <= $hi
+                WITH c, from_actor, w, sum(t.tiv) AS total
+                RETURN c.name AS country, from_actor, total,
+                       from_actor / total AS dependency,
+                       c.military_strength_score AS military,
+                       c.overall_vulnerability_score AS vulnerability,
+                       c.conflict_risk_score AS conflict
+                ORDER BY from_actor DESC LIMIT 15
+            """, {**params, "actor": actor})
+            weapons = {r["country"]: r for r in _run(conn, """
+                MATCH (s {name: $actor})-[r:TRANSFERS_ARMS_TO]->(c:Country)
+                WHERE r.year >= $lo AND r.year <= $hi
+                WITH c, r ORDER BY r.tiv DESC
+                RETURN c.name AS country, collect(r.weapons)[0] AS top
+            """, {**params, "actor": actor})}
+            if not rows:
+                return _empty_result(req, f"{actor} has no recorded arms deliveries in SIPRI data for {lo}-{hi}")
 
-        target_affected = AffectedCountry(
-            country=target,
-            impact_type="direct",
-            severity=_severity(target_vuln_delta),
-            score_deltas=[
-                _make_delta("military_strength_score",     tr.get("military"),    target_military_delta),
-                _make_delta("overall_vulnerability_score", tr.get("vulnerability"), target_vuln_delta),
-                _make_delta("conflict_risk_score",         tr.get("conflict_risk"), target_conflict_delta),
-            ],
-            summary=(
-                f"{target} faces arms embargo; military modernization halts, "
-                f"operational readiness degrades over 12-36 months."
-            ),
-        )
+            world = _run(conn, "MATCH ()-[t:TRANSFERS_ARMS_TO]->() WHERE t.year >= $lo AND t.year <= $hi RETURN sum(t.tiv) AS w", params)
+            actor_total = sum(float(r["from_actor"] or 0) for r in rows)
+            world_total = float((world[0].get("w") if world else 0) or 0) or 1.0
 
-        # Exporting countries lose revenue
-        supplier_affected: list[AffectedCountry] = []
-        if actor:
-            actor_rows = _run(conn, """
-                MATCH (c:Country {name: $name})
-                RETURN c.arms_export_score AS arms_export,
-                       c.economic_influence_score AS econ_influence
-            """, {"name": actor})
-            ar = actor_rows[0] if actor_rows else {}
-            supplier_affected.append(AffectedCountry(
+            for r in rows:
+                dep = float(r["dependency"] or 0)
+                conflict = float(r.get("conflict") or 0)
+                top = (weapons.get(r["country"], {}) or {}).get("top") or []
+                affected.append(AffectedCountry(
+                    country=r["country"],
+                    impact_type="direct" if dep >= 0.3 else "cascade",
+                    severity=_severity(dep * mag),
+                    score_deltas=[
+                        _make_delta("military_strength_score", r.get("military"), -clamp(dep * K_MIL * mag)),
+                        _make_delta("overall_vulnerability_score", r.get("vulnerability"), clamp(dep * K_VULN * mag)),
+                        _make_delta("conflict_risk_score", r.get("conflict"),
+                                    clamp(dep * K_CONFLICT * mag) if conflict > 0.3 else 0.0, 0.6),
+                    ],
+                    summary=(
+                        f"{dep * 100:.0f}% of {r['country']}'s major-arms imports came from {actor} "
+                        f"({lo}-{hi}: {float(r['from_actor']):,.0f} of {float(r['total']):,.0f} SIPRI TIV)"
+                        + (f"; e.g. {', '.join(top[:2])}." if top else ".")
+                    ),
+                ))
+            share = actor_total / world_total
+            ar = _run(conn, "MATCH (c {name: $n}) RETURN c.arms_export_score AS ax, c.economic_influence_score AS ei", {"n": actor})
+            ar = ar[0] if ar else {}
+            affected.append(AffectedCountry(
                 country=actor,
                 impact_type="direct",
-                severity="low",
+                severity=_severity(share * 2 * mag),
                 score_deltas=[
-                    _make_delta("arms_export_score", ar.get("arms_export"), -clamp(0.04 * mag), 0.6),
+                    _make_delta("arms_export_score", ar.get("ax"), -clamp(share * mag), 0.7),
+                    _make_delta("economic_influence_score", ar.get("ei"), -clamp(share * 0.3 * mag), 0.5),
                 ],
-                summary=f"{actor} loses arms export revenue from {target} embargo.",
+                summary=(f"{actor} gives up {share * 100:.1f}% of world major-arms deliveries "
+                         f"({actor_total:,.0f} TIV, {lo}-{hi}) and the leverage that comes with them."),
             ))
+            dependent = [a for a in affected[:-1] if a.impact_type == "direct"]
+            cascades.append(CascadeEffect(
+                mechanism="Spare parts and maintenance gap",
+                affected=", ".join(a.country for a in dependent[:6]) or "major recipients",
+                severity=_severity(max((float(r["dependency"] or 0) for r in rows), default=0) * mag),
+                description=(f"{len(dependent)} recipients rely on {actor} for 30%+ of their major arms; "
+                             f"fleets of {actor}-made aircraft, tanks and air defence lose spares and upgrades."),
+            ))
+            cascades.append(CascadeEffect(
+                mechanism="Supplier substitution",
+                affected="Alternative exporters",
+                severity="medium",
+                description="Recipients turn to other suppliers; multi-year procurement and retraining lag.",
+            ))
+            sources = ["TRANSFERS_ARMS_TO (SIPRI)", "military_strength_score", "overall_vulnerability_score", "arms_export_score"]
 
-        cascades = [
-            CascadeEffect(
+        else:
+            # ── Mode 2: embargo on a target ───────────────────────────────
+            sup = _run(conn, """
+                MATCH (s)-[r:TRANSFERS_ARMS_TO]->(c:Country {name: $target})
+                WHERE r.year >= $lo AND r.year <= $hi
+                RETURN s.name AS supplier, sum(r.tiv) AS tiv, s.arms_export_score AS ax
+                ORDER BY tiv DESC
+            """, {**params, "target": target})
+            total = sum(float(r["tiv"] or 0) for r in sup)
+            if actor:
+                cut = sum(float(r["tiv"] or 0) for r in sup if r["supplier"] == actor)
+                dep = cut / total if total else 0.0
+                embargoers = [r for r in sup if r["supplier"] == actor]
+            else:
+                dep = 1.0 if total else 0.0
+                embargoers = sup[:6]
+            tr = _run(conn, """MATCH (c:Country {name: $n}) RETURN c.military_strength_score AS m,
+                               c.overall_vulnerability_score AS v, c.conflict_risk_score AS cr""", {"n": target})
+            tr = tr[0] if tr else {}
+            conflict = float(tr.get("cr") or 0)
+            affected.append(AffectedCountry(
+                country=target,
+                impact_type="direct",
+                severity=_severity(dep * mag),
+                score_deltas=[
+                    _make_delta("military_strength_score", tr.get("m"), -clamp(dep * K_MIL * mag)),
+                    _make_delta("overall_vulnerability_score", tr.get("v"), clamp(dep * K_VULN * mag)),
+                    _make_delta("conflict_risk_score", tr.get("cr"), clamp(dep * K_CONFLICT * mag) if conflict > 0.3 else 0.0, 0.6),
+                ],
+                summary=(f"The embargo cuts off {dep * 100:.0f}% of {target}'s major-arms imports "
+                         f"({lo}-{hi}, {total:,.0f} TIV in total)."
+                         if total else f"{target} has no recorded major-arms imports in {lo}-{hi}; little direct effect."),
+            ))
+            for r in embargoers:
+                s_share = float(r["tiv"] or 0) / total if total else 0
+                affected.append(AffectedCountry(
+                    country=r["supplier"],
+                    impact_type="direct",
+                    severity="low",
+                    score_deltas=[_make_delta("arms_export_score", r.get("ax"), -clamp(s_share * 0.1 * mag), 0.6)],
+                    summary=f"{r['supplier']} loses a market worth {float(r['tiv'] or 0):,.0f} TIV ({s_share * 100:.0f}% of {target}'s imports).",
+                ))
+            cascades.append(CascadeEffect(
                 mechanism="Military capability degradation",
                 affected=target,
-                severity=_severity(target_vuln_delta),
-                description=(
-                    f"{target}'s armed forces cannot procure replacement parts, "
-                    f"ammunition, or new platforms; combat effectiveness falls over time."
-                ),
-            ),
-        ]
-        if current_conflict > 0.4:
-            cascades.append(CascadeEffect(
-                mechanism="Conflict prolongation",
-                affected=target,
-                severity="high",
-                description=(
-                    f"With active conflict and an arms embargo, {target} cannot "
-                    f"sustain military operations, potentially forcing negotiations or collapse."
-                ),
+                severity=_severity(dep * mag),
+                description=f"{target} cannot replace platforms, spares or munitions from embargoing suppliers.",
             ))
+            sources = ["TRANSFERS_ARMS_TO (SIPRI)", "military_strength_score", "conflict_risk_score"]
 
         return ScenarioResult(
             scenario_type=ScenarioType.ARMS_EMBARGO,
             actor=actor,
             target=target,
             raw_query=req.raw_query,
-            year=year,
+            year=req.year,
             headline="",
             summary="",
-            affected_countries=[target_affected] + supplier_affected,
+            affected_countries=sorted(affected, key=lambda a: sum(abs(d.delta) for d in a.score_deltas), reverse=True),
             cascade_effects=cascades,
-            data_sources=["military_strength_score", "conflict_risk_score", "EXPORTS_ARMS"],
-            confidence=0.75,
+            data_sources=sources,
+            confidence=0.8,
         )
     finally:
         conn.close()

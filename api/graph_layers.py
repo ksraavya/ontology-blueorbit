@@ -113,6 +113,19 @@ LAYERS: dict[str, dict[str, Any]] = {
             ORDER BY value DESC LIMIT $limit""",
         "fmt": "{src} ↔ {dst}: {value_int} diplomatic events",
     },
+    "arms_transfers": {
+        "label": "Arms transfers (SIPRI)", "domain": "defense", "color": "#dc2626", "unit": "SIPRI TIV",
+        "source": "SIPRI Arms Transfers Database", "directed": True,
+        # last 10 years summed: major platforms are delivered in lumps, single years are noisy
+        "query": """
+            MATCH ()-[x:TRANSFERS_ARMS_TO]->() WITH max(x.year) AS hi
+            MATCH (a:Country)-[r:TRANSFERS_ARMS_TO]->(b:Country) WHERE r.year > hi - 10 {country}
+            WITH a, b, hi, sum(r.tiv) AS value, collect(r.weapons)[0] AS w
+            RETURN a.name AS src, b.name AS dst, a.iso_numeric AS src_iso, b.iso_numeric AS dst_iso,
+                   value, hi AS year, w[0..2] AS extra
+            ORDER BY value DESC LIMIT $limit""",
+        "fmt": "{src} → {dst}: {value_int} TIV of major arms over 10 years to {year} (e.g. {extra})",
+    },
     "arms_trade": {
         "label": "Arms trade (customs)", "domain": "defense", "color": "#ef4444", "unit": "USD",
         "source": "CEPII BACI HS 93 + tanks + warships", "directed": True,
@@ -287,6 +300,16 @@ _PROFILE_QUERIES: dict[str, str] = {
         RETURN type(r) AS rel, labels(d)[0] AS kind, coalesce(d.name, d.type, d.disaster_type) AS name,
                r.year AS year, properties(r) AS props
         ORDER BY r.year DESC LIMIT 12""",
+    "arms_suppliers": """
+        MATCH ()-[x:TRANSFERS_ARMS_TO]->() WITH max(x.year) AS hi
+        MATCH (s)-[r:TRANSFERS_ARMS_TO]->(c:Country {name: $name}) WHERE r.year > hi - 10
+        RETURN s.name AS country, sum(r.tiv) AS value, collect(r.weapons)[0][0..2] AS weapons
+        ORDER BY value DESC LIMIT 15""",
+    "arms_recipients": """
+        MATCH ()-[x:TRANSFERS_ARMS_TO]->() WITH max(x.year) AS hi
+        MATCH (c {name: $name})-[r:TRANSFERS_ARMS_TO]->(t:Country) WHERE r.year > hi - 10
+        RETURN t.name AS country, sum(r.tiv) AS value, collect(r.weapons)[0][0..2] AS weapons
+        ORDER BY value DESC LIMIT 15""",
     "connections": """
         MATCH (c:Country {name: $name})-[r]-() RETURN type(r) AS type, count(*) AS n ORDER BY n DESC""",
     "risk_rank": """

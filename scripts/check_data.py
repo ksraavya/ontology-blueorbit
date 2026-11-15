@@ -45,6 +45,8 @@ DATASETS: list[Dataset] = [
             "https://armstrade.sipri.org/"),
     Dataset("acled", "defense", "acled_*.xlsx",
             "https://acleddata.com/  (4 aggregated xlsx files)"),
+    Dataset("sipri_trade_register", "defense", "sipri_trade_register.csv",
+            "https://armstrade.sipri.org/ -> Trade registers, all suppliers/recipients, CSV", required=False),
     # ── Economy ──
     Dataset("baci", "economy", "baci_trade_*.csv",
             "https://www.cepii.fr/CEPII/en/bdd_modele/bdd_modele_item.asp?id=37  (HS17, free signup)",

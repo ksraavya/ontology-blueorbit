@@ -160,7 +160,7 @@ def run_sanctions(req: ScenarioRequest) -> ScenarioResult:
         # ── 5. Third-country cascade — who else depends on target? ────────
         cascade_rows = _run(conn, """
             MATCH (other:Country)-[r:HAS_TRADE_DEPENDENCY_ON]->(t:Country {name: $target})
-            WHERE r.year = $year AND r.dependency >= 0.1 AND other.name <> $actor
+            WHERE coalesce(other.population_m, 0) >= 1 AND r.year = $year AND r.dependency >= 0.1 AND other.name <> $actor
             RETURN other.name AS country,
                    r.dependency AS dependency,
                    other.trade_vulnerability_score AS trade_vuln,
