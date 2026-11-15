@@ -19,3 +19,4 @@ node_modules/
 *.log
 rebuild.log
 backups/
+!.env.example
