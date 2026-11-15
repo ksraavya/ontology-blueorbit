@@ -132,7 +132,7 @@ Same page, **Environment** section → **Add environment variable** for each:
 |---|---|
 | `PYTHON_VERSION` | `3.12.7` (the code is tested on 3.12; Render's default is newer) |
 | `NEO4J_URI` | the `neo4j+s://…` URI from step 1.2 |
-| `NEO4J_USER` | `neo4j` |
+| `NEO4J_USER` | the `NEO4J_USERNAME` from the Aura credentials file. Newer instances use the **instance ID** (ours: `224ab54b`), not `neo4j` |
 | `NEO4J_PASSWORD` | the Aura password |
 | `OPENAI_API_KEY` | your OpenAI key |
 | `OPENAI_MODEL` | `gpt-4o-mini` |
