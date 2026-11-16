@@ -17,3 +17,6 @@ node_modules/
 .idea/
 .vscode/
 *.log
+rebuild.log
+backups/
+!.env.example

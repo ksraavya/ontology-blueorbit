@@ -18,7 +18,7 @@ def get_spending_trend(country_name: str) -> list:
         try:
             query = """
             MATCH (c:Country {name: $name})-[r:SPENDS_ON_DEFENSE]->(y:Year)
-            RETURN y.year AS year, r.amount_usd_millions AS amount
+            RETURN y.year AS year, coalesce(r.amount_usd_millions, r.value) AS amount
             ORDER BY year
             """
             return conn.run_query(query, {"name": country_name})
@@ -33,10 +33,20 @@ def get_top_defense_spenders(limit: int = 10) -> list:
         conn = Neo4jConnection()
         try:
             query = """
-            MATCH (c:Country)-[r:SPENDS_ON_DEFENSE]->(y:Year)
-            WHERE y.year = 2023
-            RETURN c.name AS country, r.amount_usd_millions AS spending_2023
-            ORDER BY spending_2023 DESC LIMIT $limit
+            // The milex pipeline writes r.value (USD millions); an older
+            // inserter wrote r.amount_usd_millions. Read either. Use the
+            // latest year with data instead of a hardcoded 2023, and drop
+            // nulls: Cypher sorts null FIRST under DESC.
+            MATCH (:Country)-[r0:SPENDS_ON_DEFENSE]->(y0:Year)
+            WITH max(y0.year) AS latest
+            MATCH (c:Country)-[r:SPENDS_ON_DEFENSE]->(y:Year {year: latest})
+            WITH c, latest, coalesce(r.amount_usd_millions, r.value) AS amount
+            WHERE amount IS NOT NULL
+            RETURN c.name AS country,
+                   amount AS spending_usd_millions,
+                   amount AS spending_2023,
+                   latest AS year
+            ORDER BY amount DESC LIMIT $limit
             """
             return conn.run_query(query, {"limit": limit})
         finally:

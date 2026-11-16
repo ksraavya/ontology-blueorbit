@@ -16,9 +16,11 @@ Hazard risk classification is NOT ingested here — it is derived
 entirely in compute.py from the above sources.
 """
 
+import json
 import logging
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 from pathlib import Path
 
@@ -136,84 +138,128 @@ def _build_country_index() -> dict[str, dict]:
 
 # ── REST Countries helpers ────────────────────────────────────────────────────
 
+_WORLD_GEOMETRY = Path(__file__).resolve().parents[2] / "data" / "reference" / "countries-110m.json"
+
+
+def _decode_topojson_rings(topo: dict) -> dict[str, list[list[tuple[float, float]]]]:
+    """Return {iso_numeric: [outer ring, ...]} with rings as (lon, lat) lists."""
+    scale = topo["transform"]["scale"]
+    translate = topo["transform"]["translate"]
+    arcs: list[list[tuple[float, float]]] = []
+    for arc in topo["arcs"]:          # quantised + delta-encoded
+        x = y = 0
+        pts = []
+        for dx, dy in arc:
+            x += dx
+            y += dy
+            pts.append((x * scale[0] + translate[0], y * scale[1] + translate[1]))
+        arcs.append(pts)
+
+    def ring(idx_list: list[int]) -> list[tuple[float, float]]:
+        out: list[tuple[float, float]] = []
+        for i in idx_list:
+            pts = arcs[i] if i >= 0 else list(reversed(arcs[~i]))
+            out.extend(pts if not out else pts[1:])
+        return out
+
+    shapes: dict[str, list[list[tuple[float, float]]]] = {}
+    for g in topo["objects"]["countries"]["geometries"]:
+        gid = g.get("id")
+        if gid is None or not g.get("arcs"):
+            continue
+        polys = g["arcs"] if g["type"] == "MultiPolygon" else [g["arcs"]]
+        shapes[str(gid).zfill(3)] = [ring(poly[0]) for poly in polys]
+    return shapes
+
+
+def _unwrap(r: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Rings crossing the 180 deg meridian: shift western longitudes by +360 so the ring is continuous."""
+    lons = [x for x, _ in r]
+    if max(lons) - min(lons) > 180:
+        return [(x + 360 if x < 0 else x, y) for x, y in r]
+    return r
+
+
+def _ring_area_centroid(r: list[tuple[float, float]]) -> tuple[float, float, float]:
+    """Shoelace area + centroid on lon/lat; area converted to km2 at the ring latitude."""
+    r = _unwrap(r)
+    a = cx = cy = 0.0
+    for (x0, y0), (x1, y1) in zip(r, r[1:] + r[:1]):
+        cross = x0 * y1 - x1 * y0
+        a += cross
+        cx += (x0 + x1) * cross
+        cy += (y0 + y1) * cross
+    a *= 0.5
+    if abs(a) < 1e-12:
+        xs, ys = zip(*r)
+        cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+        km2 = 0.0
+    else:
+        cx /= 6 * a
+        cy /= 6 * a
+        km2 = abs(a) * 111.32 * 110.57 * math.cos(math.radians(cy))
+    if cx > 180:
+        cx -= 360
+    return km2, cx, cy
+
+
+def _ring_boxes(r: list[tuple[float, float]]) -> list[tuple[float, float, float, float]]:
+    """Bounding box(es) of one landmass; split in two if it crosses the 180 deg meridian."""
+    lons = [x for x, _ in r]
+    lats = [y for _, y in r]
+    if max(lons) - min(lons) <= 180:
+        return [(min(lons), min(lats), max(lons), max(lats))]
+    east = [(x, y) for x, y in r if x >= 0]
+    west = [(x, y) for x, y in r if x < 0]
+    boxes = []
+    for part, lo, hi in ((east, None, 180.0), (west, -180.0, None)):
+        if not part:
+            continue
+        xs, ys = zip(*part)
+        boxes.append((lo if lo is not None else min(xs), min(ys), hi if hi is not None else max(xs), max(ys)))
+    return boxes
+
+
 def _fetch_country_centroids(country_index: dict[str, dict]) -> dict[str, dict]:
     """
-    Fetch lat/lon centroid and land area for every country via REST Countries API.
+    Centroid, land area and per-landmass bounding boxes for every country,
+    computed OFFLINE from Natural Earth 1:110m borders
+    (data/reference/countries-110m.json).
 
-    Endpoint: GET {REST_COUNTRIES_BASE}/alpha/{iso2}
-    Response fields used:
-        latlng  → [lat, lon]
-        area    → km²
+    Replaces the REST Countries API: its v3.1 endpoint was deprecated and
+    returned nothing (0 / 249 centroids), which silently emptied the NASA
+    and USGS stages. A local file cannot go down. Trade-off: 1:110m has no
+    micro-states (~175 countries), which then simply lack NASA/USGS values.
 
     Returns:
-        {alpha_2: {lat, lon, name, area_km2}}
-
-    Countries whose fetch fails are logged and skipped — they will simply
-    have no NASA POWER or USGS data rather than crashing the pipeline.
+        {alpha_2: {lat, lon, name, area_km2, boxes: [(min_lon, min_lat, max_lon, max_lat), ...]}}
     """
+    with open(_WORLD_GEOMETRY, encoding="utf-8") as fh:
+        shapes = _decode_topojson_rings(json.load(fh))
+
+    by_numeric = {str(v["numeric"]).zfill(3): k for k, v in country_index.items() if v.get("numeric")}
     centroids: dict[str, dict] = {}
-    total = len(country_index)
-
-    for idx, (iso2, payload) in enumerate(country_index.items(), start=1):
-        url = f"{REST_COUNTRIES_BASE}/alpha/{iso2}"
-        try:
-            response = requests.get(url, timeout=25)
-            response.raise_for_status()
-            data = response.json()
-
-            # API returns a list with one item
-            item = data[0] if isinstance(data, list) and data else data
-            if not isinstance(item, dict):
-                logger.warning("Unexpected REST Countries response for %s", iso2)
-                time.sleep(REST_COUNTRIES_SLEEP_S)
-                continue
-
-            latlng = item.get("latlng")
-            if not isinstance(latlng, list) or len(latlng) < 2:
-                logger.warning("Missing or malformed latlng for %s", iso2)
-                time.sleep(REST_COUNTRIES_SLEEP_S)
-                continue
-
-            lat      = float(latlng[0])
-            lon      = float(latlng[1])
-            area_raw = item.get("area")
-            # area can be None for very small territories — default to 100 km²
-            # which gives a ~1° padding, enough for a micro-state
-            area_km2 = float(area_raw) if area_raw is not None else 100.0
-
-            centroids[iso2] = {
-                "lat":      lat,
-                "lon":      lon,
-                "name":     payload["name"],
-                "area_km2": area_km2,
-            }
-
-        except requests.HTTPError as exc:
-            logger.warning(
-                "REST Countries HTTP error for %s (%s): %s",
-                iso2, payload.get("name"), exc,
-            )
-        except requests.RequestException as exc:
-            logger.warning(
-                "REST Countries request failed for %s (%s): %s",
-                iso2, payload.get("name"), exc,
-            )
-        except (ValueError, KeyError, TypeError) as exc:
-            logger.warning(
-                "REST Countries parse error for %s (%s): %s",
-                iso2, payload.get("name"), exc,
-            )
-
-        if idx % 50 == 0:
-            logger.info(
-                "REST Countries centroids: %d / %d fetched, %d succeeded",
-                idx, total, len(centroids),
-            )
-        time.sleep(REST_COUNTRIES_SLEEP_S)
+    for numeric, rings in shapes.items():
+        iso2 = by_numeric.get(numeric)
+        if not iso2:
+            continue
+        parts = [(_ring_area_centroid(r), r) for r in rings if len(r) >= 3]
+        if not parts:
+            continue
+        # NASA sample point = centroid of the largest landmass
+        (_, lon, lat), _main = max(parts, key=lambda p: p[0][0])
+        boxes = [b for _, r in parts for b in _ring_boxes(r)]
+        centroids[iso2] = {
+            "lat": lat,
+            "lon": lon,
+            "name": country_index[iso2]["name"],
+            "area_km2": max(sum(p[0][0] for p in parts), 1.0),
+            "boxes": boxes,
+        }
 
     logger.info(
-        "_fetch_country_centroids: %d / %d countries with centroids",
-        len(centroids), total,
+        "_fetch_country_centroids: %d / %d countries with centroids (offline Natural Earth)",
+        len(centroids), len(country_index),
     )
     return centroids
 
@@ -234,6 +280,24 @@ def _build_bbox_index(centroids: dict[str, dict]) -> dict[str, dict]:
     bbox: dict[str, dict] = {}
     for iso2, payload in centroids.items():
         area_km2 = float(payload.get("area_km2") or 100.0)
+        if payload.get("boxes"):
+            # Real border extents, one box per landmass (+0.5 deg so coastal /
+            # offshore quakes still match). Overall extent kept for callers that
+            # only read min/max.
+            boxes = [
+                (max(-180.0, b[0] - 0.5), max(-90.0, b[1] - 0.5), min(180.0, b[2] + 0.5), min(90.0, b[3] + 0.5))
+                for b in payload["boxes"]
+            ]
+            bbox[iso2] = {
+                "min_lat":  min(b[1] for b in boxes),
+                "max_lat":  max(b[3] for b in boxes),
+                "min_lon":  min(b[0] for b in boxes),
+                "max_lon":  max(b[2] for b in boxes),
+                "boxes":    boxes,
+                "name":     payload["name"],
+                "area_km2": area_km2,
+            }
+            continue
         pad = math.sqrt(max(area_km2, 1.0)) / 100.0
         pad = float(min(BBOX_MAX_PADDING_DEG, max(BBOX_MIN_PADDING_DEG, pad)))
 
@@ -422,172 +486,124 @@ def _fetch_wb_indicator(iso2: str, indicator: str) -> list[dict]:
         return []
 
 
-def load_worldbank_co2_data(country_index: dict[str, dict]) -> list[dict]:
+def _fetch_wb_indicator_all(indicator: str) -> list[dict]:
     """
-    Fetch CO2 per capita (EN.ATM.CO2E.PC) for all ISO countries.
-
-    Iterates country_index, calls _fetch_wb_indicator for each,
-    enriches rows with the normalized country name and indicator_type="co2".
-    Sleeps WB_SLEEP_S between requests.
-    Logs progress every 50 countries.
+    Every country's values for one indicator in a few paged requests
+    (country/all) instead of one request per country (249 round trips at
+    ~15 s each when the API is slow). Bounded retries, so a dead API costs
+    at most a few minutes instead of an hour.
     """
-    out: list[dict] = []
-    total = len(country_index)
-
-    for idx, (iso2, info) in enumerate(country_index.items(), start=1):
-        rows = _fetch_wb_indicator(iso2, WB_CO2_INDICATOR)
-        for row in rows:
-            row["name"]           = info["name"]
-            row["indicator_type"] = "co2"
-            out.append(row)
-
-        if idx % 50 == 0:
-            logger.info(
-                "WorldBank CO2: %d / %d countries processed, %d rows so far",
-                idx, total, len(out),
-            )
+    rows: list[dict] = []
+    page, pages = 1, 1
+    while page <= pages:
+        url = (
+            f"{WB_API_BASE}/country/all/indicator/{indicator}"
+            f"?format=json&per_page=1000&mrv={WB_YEARS_MRV}&page={page}"
+        )
+        payload = None
+        for attempt in range(3):
+            try:
+                response = requests.get(url, timeout=90)
+                response.raise_for_status()
+                payload = response.json()
+                break
+            except (requests.RequestException, ValueError) as exc:
+                logger.warning("WB %s page %d attempt %d failed: %s", indicator, page, attempt + 1, exc)
+                time.sleep(2 * (attempt + 1))
+        if not isinstance(payload, list) or len(payload) < 2:
+            logger.warning("WB %s: giving up at page %d (%d rows kept)", indicator, page, len(rows))
+            return rows
+        pages = int(payload[0].get("pages") or 1)
+        for dp in payload[1] or []:
+            value = dp.get("value")
+            iso2 = (dp.get("country") or {}).get("id")
+            if value is None or not iso2:
+                continue
+            rows.append({
+                "iso2":      iso2,
+                "indicator": indicator,
+                "value":     value,
+                "year":      dp.get("date"),
+                "iso3":      dp.get("countryiso3code"),
+            })
+        page += 1
         time.sleep(WB_SLEEP_S)
+    return rows
 
+
+def _load_worldbank(country_index: dict[str, dict], indicator: str, kind: str) -> list[dict]:
+    out: list[dict] = []
+    for row in _fetch_wb_indicator_all(indicator):
+        info = country_index.get(row["iso2"])
+        if not info:            # aggregates ("World", "Euro area") have no ISO alpha-2
+            continue
+        row["name"] = info["name"]
+        row["indicator_type"] = kind
+        out.append(row)
     logger.info(
-        "load_worldbank_co2_data: %d total rows for %d countries",
-        len(out), total,
+        "WorldBank %s (%s): %d rows for %d countries",
+        kind, indicator, len(out), len({r["iso2"] for r in out}),
     )
     return out
+
+
+def load_worldbank_co2_data(country_index: dict[str, dict]) -> list[dict]:
+    """CO2 per capita (WB_CO2_INDICATOR) for all ISO countries, bulk fetch."""
+    return _load_worldbank(country_index, WB_CO2_INDICATOR, "co2")
 
 
 def load_worldbank_forest_data(country_index: dict[str, dict]) -> list[dict]:
-    """
-    Fetch forest area % (AG.LND.FRST.ZS) for all ISO countries.
-    Same structure as load_worldbank_co2_data but indicator_type="forest".
-    """
-    out: list[dict] = []
-    total = len(country_index)
-
-    for idx, (iso2, info) in enumerate(country_index.items(), start=1):
-        rows = _fetch_wb_indicator(iso2, WB_FOREST_INDICATOR)
-        for row in rows:
-            row["name"]           = info["name"]
-            row["indicator_type"] = "forest"
-            out.append(row)
-
-        if idx % 50 == 0:
-            logger.info(
-                "WorldBank Forest: %d / %d countries processed, %d rows so far",
-                idx, total, len(out),
-            )
-        time.sleep(WB_SLEEP_S)
-
-    logger.info(
-        "load_worldbank_forest_data: %d total rows for %d countries",
-        len(out), total,
-    )
-    return out
+    """Forest area % (AG.LND.FRST.ZS) for all ISO countries, bulk fetch."""
+    return _load_worldbank(country_index, WB_FOREST_INDICATOR, "forest")
 
 
 # ── NASA POWER ────────────────────────────────────────────────────────────────
 
-def load_nasa_power_data(centroids: dict[str, dict]) -> list[dict]:
-    """
-    Fetch mean annual surface temperature (T2M) from NASA POWER for each
-    country centroid.
-
-    Endpoint: {NASA_POWER_BASE}?parameters=T2M&community=RE
-                                &longitude={lon}&latitude={lat}&format=JSON
-
-    Response path:
-        response["properties"]["parameter"]["T2M"]
-        → dict of {"JAN": float, ..., "ANN": float, ...}
-
-    Strategy:
-        1. Use "ANN" key directly (annual mean provided by NASA).
-        2. If "ANN" absent, average the 12 monthly keys (JAN–DEC).
-        3. Skip the country if neither is available.
-
-    Sleeps NASA_SLEEP_S between requests.
-    All errors are logged with WARNING (not silently swallowed).
-    """
-    out: list[dict] = []
-    total = len(centroids)
-
-    for idx, (iso2, item) in enumerate(centroids.items(), start=1):
-        lat  = item["lat"]
-        lon  = item["lon"]
-        name = item["name"]
-        url  = (
-            f"{NASA_POWER_BASE}"
-            f"?parameters={NASA_PARAMETER}"
-            f"&community={NASA_COMMUNITY}"
-            f"&longitude={lon}"
-            f"&latitude={lat}"
-            f"&format=JSON"
-        )
+def _nasa_one(iso2: str, item: dict) -> dict | None:
+    lat, lon, name = item["lat"], item["lon"], item["name"]
+    url = (
+        f"{NASA_POWER_BASE}"
+        f"?parameters={NASA_PARAMETER}"
+        f"&community={NASA_COMMUNITY}"
+        f"&longitude={lon}"
+        f"&latitude={lat}"
+        f"&format=JSON"
+    )
+    for attempt in range(2):
         try:
             response = requests.get(url, timeout=45)
             response.raise_for_status()
-            payload = response.json()
-
-            t2m = (
-                payload
-                .get("properties", {})
-                .get("parameter", {})
-                .get("T2M", {})
-            )
+            t2m = response.json().get("properties", {}).get("parameter", {}).get("T2M", {})
             if not isinstance(t2m, dict) or not t2m:
-                logger.warning(
-                    "NASA POWER: empty T2M for %s (%s)", iso2, name
-                )
-                time.sleep(NASA_SLEEP_S)
-                continue
-
-            # Prefer the pre-computed annual mean
+                logger.warning("NASA POWER: empty T2M for %s (%s)", iso2, name)
+                return None
             ann = t2m.get("ANN")
+            if ann is None or ann == -999:
+                monthly = [float(v) for k, v in t2m.items() if k in _NASA_MONTH_KEYS and v not in (None, -999)]
+                ann = sum(monthly) / len(monthly) if monthly else None
             if ann is None:
-                monthly_vals = [
-                    float(v)
-                    for k, v in t2m.items()
-                    if k in _NASA_MONTH_KEYS and v is not None
-                ]
-                ann = sum(monthly_vals) / len(monthly_vals) if monthly_vals else None
+                logger.warning("NASA POWER: no annual mean for %s (%s)", iso2, name)
+                return None
+            return {"alpha_2": iso2, "name": name, "lat": lat, "lon": lon, "mean_temp_c": float(ann)}
+        except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+            if attempt == 1:
+                logger.warning("NASA POWER failed for %s (%s): %s", iso2, name, exc)
+            time.sleep(1.0)
+    return None
 
-            if ann is None:
-                logger.warning(
-                    "NASA POWER: could not compute annual mean for %s (%s)",
-                    iso2, name,
-                )
-                time.sleep(NASA_SLEEP_S)
-                continue
 
-            out.append({
-                "alpha_2":    iso2,
-                "name":       name,
-                "lat":        lat,
-                "lon":        lon,
-                "mean_temp_c": float(ann),
-            })
-
-        except requests.HTTPError as exc:
-            logger.warning(
-                "NASA POWER HTTP error for %s (%s): %s", iso2, name, exc
-            )
-        except requests.RequestException as exc:
-            logger.warning(
-                "NASA POWER request failed for %s (%s): %s", iso2, name, exc
-            )
-        except (ValueError, KeyError, TypeError) as exc:
-            logger.warning(
-                "NASA POWER parse error for %s (%s): %s", iso2, name, exc
-            )
-
-        if idx % 50 == 0:
-            logger.info(
-                "NASA POWER: %d / %d countries processed, %d succeeded",
-                idx, total, len(out),
-            )
-        time.sleep(NASA_SLEEP_S)
-
+def load_nasa_power_data(centroids: dict[str, dict]) -> list[dict]:
+    """
+    Mean annual surface temperature (T2M climatology) from NASA POWER per
+    country centroid. No bulk endpoint exists, so requests run 6 at a time.
+    """
+    items = list(centroids.items())
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(lambda kv: _nasa_one(*kv), items))
+    out = [r for r in results if r]
     logger.info(
         "load_nasa_power_data: %d / %d countries with temperature data",
-        len(out), total,
+        len(out), len(items),
     )
     return out
 
@@ -608,10 +624,8 @@ def _assign_quake_to_country(
     """
     matches: list[tuple[float, str]] = []
     for box in bbox_index.values():
-        if (
-            box["min_lat"] <= lat <= box["max_lat"]
-            and box["min_lon"] <= lon <= box["max_lon"]
-        ):
+        parts = box.get("boxes") or [(box["min_lon"], box["min_lat"], box["max_lon"], box["max_lat"])]
+        if any(b[1] <= lat <= b[3] and b[0] <= lon <= b[2] for b in parts):
             matches.append((float(box.get("area_km2", 1e12)), box["name"]))
 
     if not matches:
@@ -759,7 +773,7 @@ def load_all(years: list[int] | None = None) -> dict[str, list[dict]]:
     country_index = _build_country_index()
 
     # ── Step 2: centroids via REST Countries ──────────────────────────────
-    logger.info("=== Stage 2/8: Fetching country centroids (REST Countries) ===")
+    logger.info("=== Stage 2/8: Country centroids + borders (offline Natural Earth) ===")
     centroids = _fetch_country_centroids(country_index)
 
     # ── Step 3: bounding boxes (local) ────────────────────────────────────

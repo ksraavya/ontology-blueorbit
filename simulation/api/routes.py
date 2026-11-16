@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from simulation.engine import run_simulation, parse_intent
 from simulation.models import SimulateRequest, SimulateResponse
 from simulation.registry import list_available
+from simulation.catalog import scenario_catalog
 
 router = APIRouter(prefix="/simulate", tags=["simulation"])
 
@@ -15,10 +16,12 @@ def simulate(request: SimulateRequest) -> SimulateResponse:
     Run a geopolitical scenario simulation from a natural language query.
 
     The engine will:
-    1. Use Claude to classify the scenario type and extract entities
+    1. Classify the scenario and extract countries (OpenAI → other configured
+       LLMs → rule-based parser). Skipped entirely in structured mode
+       (send `scenario_type`, `actor`, `target` instead of `query`).
     2. Read current state from the Neo4j graph (read-only — no writes)
     3. Compute projected score deltas for every affected country
-    4. Use Claude to generate an analytical intelligence brief
+    4. Write a brief (LLM, or a template built from the numbers)
 
     **Example queries:**
     - `"What if the US sanctions China?"`
@@ -36,6 +39,8 @@ def simulate(request: SimulateRequest) -> SimulateResponse:
     - `1.5` = severe / major
     - `2.0` = extreme / catastrophic
     """
+    if not request.query.strip() and request.scenario_type is None:
+        raise HTTPException(status_code=422, detail="Send either `query` or `scenario_type`.")
     try:
         return run_simulation(request)
     except Exception as exc:
@@ -54,6 +59,7 @@ def list_scenarios() -> dict:
     return {
         "available": available,
         "total":     len(available),
+        "catalog":   scenario_catalog(available),
     }
 
 

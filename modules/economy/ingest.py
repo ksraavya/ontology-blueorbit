@@ -139,11 +139,13 @@ def _load_wb_wide(path: Path) -> pd.DataFrame:
     except Exception:
         logger.exception("Failed to read %s", path)
         raise
-    if "Unnamed: 70" not in df.columns:
-        raise ValueError(f"Missing column 'Unnamed: 70' after loading {path}")
-    base_cols = ["Country Name", "Country Code", "Indicator Name", "Indicator Code", "Unnamed: 70"]
-    _require_columns(df, path, base_cols + WB_YEAR_WIDE)
-    df = df.drop(columns=["Unnamed: 70"])
+    # World Bank CSVs end each row with a trailing comma, which pandas reads
+    # as an empty "Unnamed: N" column. N grows by one every year the bank
+    # adds a column (70 in the 2025 download, 71 in 2026), so drop any of
+    # them instead of hardcoding the index.
+    df = df.drop(columns=[c for c in df.columns if str(c).startswith("Unnamed:")])
+    base_cols = ["Country Name", "Country Code", "Indicator Name", "Indicator Code"]
+    _require_columns(df, path, base_cols + GDP_INFLATION_YEAR_COLS)
     return df
 
 
@@ -236,52 +238,85 @@ def load_org_data() -> list[dict]:
     logger.info("load_org_data: returning %d rows", len(records))
     return records
 
+# OFAC SDN.CSV has no country column: column 3 is the sanctions PROGRAM.
+# Country-based programs map to the targeted country; thematic programs
+# (terrorism, narcotics, cyber, human rights worldwide) have no single
+# country and are skipped. Source: OFAC program list
+# https://ofac.treasury.gov/sanctions-programs-and-country-information
+OFAC_PROGRAM_COUNTRY: dict[str, str] = {
+    # Russia (incl. Ukraine-related EOs targeting Russian actors / Crimea)
+    "RUSSIA-EO14024": "Russian Federation", "RUSSIA-EO14065": "Russian Federation",
+    "CAATSA - RUSSIA": "Russian Federation", "MAGNIT": "Russian Federation",
+    "PEESA-EO14039": "Russian Federation",
+    "UKRAINE-EO13660": "Russian Federation", "UKRAINE-EO13661": "Russian Federation",
+    "UKRAINE-EO13662": "Russian Federation", "UKRAINE-EO13685": "Russian Federation",
+    # Iran
+    "IRAN": "Iran", "IRAN-EO13902": "Iran", "IRAN-EO13846": "Iran", "IRAN-EO13876": "Iran",
+    "IRAN-EO13871": "Iran", "IRAN-HR": "Iran", "IRAN-TRA": "Iran", "IRAN-CON-ARMS-EO": "Iran",
+    "IRGC": "Iran", "IFSR": "Iran", "IFCA": "Iran", "CAATSA - IRAN": "Iran", "HRIT-IR": "Iran",
+    # North Korea
+    "DPRK": "North Korea", "DPRK2": "North Korea", "DPRK3": "North Korea",
+    "DPRK4": "North Korea", "DPRK-NKSPEA": "North Korea",
+    # Others
+    "BELARUS": "Belarus", "BELARUS-EO14038": "Belarus",
+    "VENEZUELA": "Venezuela", "VENEZUELA-EO13850": "Venezuela", "VENEZUELA-EO13884": "Venezuela",
+    "BURMA-EO14014": "Myanmar", "CUBA": "Cuba", "CUBA-EO14404": "Cuba",
+    "IRAQ2": "Iraq", "IRAQ3": "Iraq", "DRCONGO": "Democratic Republic of the Congo",
+    "NICARAGUA": "Nicaragua", "NICARAGUA-NHRAA": "Nicaragua",
+    "SUDAN-EO14098": "Sudan", "DARFUR": "Sudan", "SOUTH SUDAN": "South Sudan",
+    "LIBYA2": "Libya", "LIBYA3": "Libya", "SOMALIA": "Somalia",
+    "CAR": "Central African Republic", "LEBANON": "Lebanon", "YEMEN": "Yemen",
+    "MALI-EO13882": "Mali", "HRIT-SY": "Syria", "PAARSSR-EO13894": "Syria",
+    "UHRPA": "China",
+}
+
+
 def load_sanctions_data() -> list[dict]:
     """
-    Load OFAC SDN sanctions data.
-    File has no headers — columns are positional.
-    Column 0 = entity ID
-    Column 1 = entity name
-    Column 3 = country (sanctioned by USA)
-    Returns records where country is a non-empty, non '-0-' value.
+    Load OFAC SDN sanctions as country-level records.
+
+    SDN.CSV (no header): 0 ent_num, 1 name, 2 type, 3 program(s), ...
+    A cell can hold several programs: "UKRAINE-EO13662] [RUSSIA-EO14024".
+    Each designated entity counts once per targeted country, so the edge
+    weight downstream is the number of sanctioned entities: a real measure
+    of sanctions intensity, not a yes/no flag.
     """
     path = RAW_DIR / "ofac_sdn.csv"
     if not path.is_file():
         raise FileNotFoundError(str(path.resolve()))
- 
+
     try:
-        df = pd.read_csv(path, header=None, low_memory=False)
+        df = pd.read_csv(path, header=None, low_memory=False, usecols=[0, 1, 3])
     except Exception:
         logger.exception("Failed to read %s", path)
         raise
- 
-    # Column 3 is the country column
-    if df.shape[1] < 4:
-        raise ValueError(f"Expected at least 4 columns in {path}, got {df.shape[1]}")
- 
-    df = df[[1, 3]].copy()
-    df.columns = ["entity_name", "country"]
- 
-    # Drop rows where country is null, empty, or placeholder '-0-'
-    df = df[df["country"].notna()]
-    df = df[df["country"].astype(str).str.strip() != ""]
-    df = df[df["country"].astype(str).str.strip() != "-0-"]
-    df = df[df["country"].astype(str).str.len() < 40]
-    df = df[~df["country"].astype(str).str.contains(r'\[|\]', regex=True)]
- 
-    records = []
+
+    records: list[dict] = []
+    skipped_thematic = 0
     for _, row in df.iterrows():
-        records.append({
-            "sanctioned_country": str(row["country"]).strip().title(),
-            "entity_name": str(row["entity_name"]).strip(),
-            "sanctioning_country": "United States",
-            "source": "OFAC SDN",
-        })
- 
-    logger.info("load_sanctions_data: returning %d rows", len(records))
+        programs = str(row[3]) if pd.notna(row[3]) else ""
+        countries = set()
+        for prog in programs.split("] ["):
+            prog = prog.strip(" []")
+            if prog in OFAC_PROGRAM_COUNTRY:
+                countries.add(OFAC_PROGRAM_COUNTRY[prog])
+            elif prog and prog != "-0-":
+                skipped_thematic += 1
+        for country in countries:
+            records.append({
+                "sanctioned_country": country,
+                "entity_name": str(row[1]).strip(),
+                "sanctioning_country": "United States",
+                "source": "OFAC SDN",
+            })
+
+    logger.info(
+        "load_sanctions_data: %d entity-country records (%d thematic program tags skipped)",
+        len(records), skipped_thematic,
+    )
     return records
- 
- 
+
+
 def load_trade_agreements_data() -> list[dict]:
     """
     Load WTO Regional Trade Agreements data.
@@ -301,6 +336,11 @@ def load_trade_agreements_data() -> list[dict]:
         logger.exception("Failed to read %s", path)
         raise
  
+    # Newer WTO RTA-IS exports call the column "Signatories" instead of
+    # "Current signatories"; same ";"-separated content.
+    if "Current signatories" not in df.columns and "Signatories" in df.columns:
+        df = df.rename(columns={"Signatories": "Current signatories"})
+
     required = ["RTA Name", "Status", "Current signatories"]
     missing = [c for c in required if c not in df.columns]
     if missing:

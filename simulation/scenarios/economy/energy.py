@@ -4,6 +4,10 @@ import logging
 
 from common.db import Neo4jConnection
 from common.intelligence.normalization import clamp
+from simulation.calibration import (
+    ACTOR_DAMPING, K_ENERGY_DEP, K_INFLUENCE, K_RISK, K_TRADE, MIN_CASCADE_EXPOSURE,
+    exposure_delta, gdp_usd, max_severity, severity_from_exposure, share,
+)
 from simulation.models import (
     AffectedCountry,
     CascadeEffect,
@@ -72,7 +76,7 @@ def run_energy_cutoff(req: ScenarioRequest) -> ScenarioResult:
         # All importers from this actor
         importer_rows = _run(conn, """
             MATCH (importer:Country)-[r:IMPORTS_ENERGY_FROM]->(supplier:Country {name: $actor})
-            WHERE r.year = $year
+            WHERE r.year = $year AND (coalesce(importer.population_m, 0) >= 1 OR importer.name = $target)
             RETURN
                 importer.name                       AS country,
                 r.dependency                        AS dependency,
@@ -80,9 +84,10 @@ def run_energy_cutoff(req: ScenarioRequest) -> ScenarioResult:
                 importer.energy_vulnerability_score AS energy_vuln,
                 importer.trade_vulnerability_score  AS trade_vuln,
                 importer.economic_power_score       AS econ_power,
-                importer.global_risk_score          AS global_risk
+                importer.global_risk_score          AS global_risk,
+                importer.gdp_usd_bn                 AS gdp_bn
             ORDER BY r.dependency DESC
-        """, {"actor": actor, "year": year})
+        """, {"actor": actor, "year": year, "target": target})
 
         if not importer_rows:
             return _empty_result(req, f"No energy import relationships found for supplier {actor} in {year}")
@@ -104,18 +109,23 @@ def run_energy_cutoff(req: ScenarioRequest) -> ScenarioResult:
 
             total_exposure += imp_val
 
-            # Energy vulnerability rises proportional to dependency × magnitude
-            energy_delta  = clamp(dep * 0.4 * mag)
-            # GDP shock: rough proxy — higher energy dependency → larger GDP hit
-            trade_delta   = clamp(dep * 0.2 * mag)
-            risk_delta    = clamp(dep * 0.25 * mag)
+            # Exposure model (simulation/calibration.py):
+            #   exposure = energy imports from the supplier / importer GDP
+            #   energy vulnerability also rises with supplier dependency share
+            gdp = float(row.get("gdp_bn") or 0.0) * 1e9 or gdp_usd(conn, country)
+            exposure = share(imp_val, gdp)
+            energy_delta  = clamp(K_ENERGY_DEP * dep * mag + K_TRADE * exposure * mag)
+            trade_delta   = exposure_delta(exposure, K_TRADE, mag)
+            risk_delta    = exposure_delta(exposure, K_RISK, mag)
 
             is_primary = (target and country == target)
 
             affected.append(AffectedCountry(
                 country=country,
                 impact_type="direct" if is_primary else "cascade",
-                severity=_severity(dep * mag),
+                # severity on the shared GDP scale; a near-total dependency on one
+                # supplier is at least "high" even if the bill is small
+                severity=max_severity(severity_from_exposure(exposure * mag), "high" if dep * mag >= 0.6 else "low"),
                 score_deltas=[
                     _make_delta("energy_vulnerability_score", row.get("energy_vuln"), energy_delta),
                     _make_delta("trade_vulnerability_score",  row.get("trade_vuln"),  trade_delta),
@@ -123,8 +133,8 @@ def run_energy_cutoff(req: ScenarioRequest) -> ScenarioResult:
                 ],
                 exposure_usd=imp_val,
                 summary=(
-                    f"{country} imports {dep*100:.0f}% of energy from {actor}; "
-                    f"~${imp_val/1e9:.1f}B energy supply at risk."
+                    f"{country} imports {dep*100:.0f}% of its energy imports from {actor}; "
+                    f"~${imp_val/1e9:.1f}B at risk ({exposure*100:.2f}% of its GDP)."
                 ),
             ))
 

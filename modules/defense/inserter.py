@@ -61,7 +61,7 @@ def verify_spending_insert():
         MATCH (c:Country)-[r:SPENDS_ON_DEFENSE]->(y:Year)
         RETURN c.name AS country,
                count(r) AS years_with_data,
-               max(r.amount_usd_millions) AS peak_spending
+               max(coalesce(r.amount_usd_millions, r.value)) AS peak_spending
         ORDER BY peak_spending DESC
         LIMIT 10
         """

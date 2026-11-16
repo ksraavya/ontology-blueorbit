@@ -39,7 +39,9 @@ EMDAT_COLUMN_MAP = {
 
 # -- World Bank ----------------------------------------------------------------
 WB_API_BASE         = "https://api.worldbank.org/v2"
-WB_CO2_INDICATOR    = "EN.ATM.CO2E.PC"
+# EN.ATM.CO2E.PC was retired by the World Bank (requests hang).
+# Replacement: CO2 per capita, t CO2e, excl. LULUCF (AR5).
+WB_CO2_INDICATOR    = "EN.GHG.CO2.PC.CE.AR5"
 WB_FOREST_INDICATOR = "AG.LND.FRST.ZS"
 WB_YEARS_MRV        = 10
 WB_SLEEP_S          = 0.2

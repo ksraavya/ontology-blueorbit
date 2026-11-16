@@ -4,6 +4,10 @@ import logging
 
 from common.db import Neo4jConnection
 from common.intelligence.normalization import clamp
+from simulation.calibration import (
+    ACTOR_DAMPING, K_ENERGY_DEP, K_INFLUENCE, K_RISK, K_TRADE, MIN_CASCADE_EXPOSURE,
+    exposure_delta, gdp_usd, max_severity, severity_from_exposure, share,
+)
 from simulation.models import (
     AffectedCountry,
     CascadeEffect,
@@ -118,18 +122,23 @@ def run_trade_war(req: ScenarioRequest) -> ScenarioResult:
         ts = target_scores[0] if target_scores else {}
 
         # Compute deltas — both sides hurt, target typically more if smaller
-        actor_trade_delta   = clamp(actor_dep_on_target * 0.25 * mag)
-        actor_econ_delta    = -clamp(actor_dep_on_target * 0.15 * mag)
-        actor_risk_delta    = clamp(actor_dep_on_target * 0.10 * mag)
-
-        target_trade_delta  = clamp(target_dep_on_actor * 0.30 * mag)
-        target_econ_delta   = -clamp(target_dep_on_actor * 0.20 * mag)
-        target_risk_delta   = clamp(target_dep_on_actor * 0.15 * mag)
+        # Exposure model (simulation/calibration.py): bilateral trade / GDP
+        # for each side. A tariff war hurts whoever has more of its economy
+        # riding on the other, regardless of who started it.
+        _bilateral = float(bilateral_volume or 0.0)
+        exp_a = share(_bilateral, gdp_usd(conn, actor))
+        exp_t = share(_bilateral, gdp_usd(conn, target))
+        actor_trade_delta   = exposure_delta(exp_a, K_TRADE, mag)
+        actor_econ_delta    = -exposure_delta(exp_a, K_INFLUENCE, mag)
+        actor_risk_delta    = exposure_delta(exp_a, K_RISK, mag)
+        target_trade_delta  = exposure_delta(exp_t, K_TRADE, mag)
+        target_econ_delta   = -exposure_delta(exp_t, K_INFLUENCE, mag)
+        target_risk_delta   = exposure_delta(exp_t, K_RISK, mag)
 
         actor_affected = AffectedCountry(
             country=actor,
             impact_type="direct",
-            severity=_severity(actor_dep_on_target * mag),
+            severity=severity_from_exposure(exp_a * mag),
             score_deltas=[
                 _make_delta("trade_vulnerability_score", as_.get("trade_vuln"),   actor_trade_delta),
                 _make_delta("economic_influence_score",  as_.get("econ_influence"), actor_econ_delta),
@@ -145,7 +154,7 @@ def run_trade_war(req: ScenarioRequest) -> ScenarioResult:
         target_affected = AffectedCountry(
             country=target,
             impact_type="direct",
-            severity=_severity(target_dep_on_actor * mag),
+            severity=severity_from_exposure(exp_t * mag),
             score_deltas=[
                 _make_delta("trade_vulnerability_score", ts.get("trade_vuln"),   target_trade_delta),
                 _make_delta("economic_influence_score",  ts.get("econ_influence"), target_econ_delta),
@@ -161,7 +170,7 @@ def run_trade_war(req: ScenarioRequest) -> ScenarioResult:
         # Third-country cascade — those dependent on either actor or target
         cascade_rows = _run(conn, """
             MATCH (other:Country)-[r:HAS_TRADE_DEPENDENCY_ON]->(c:Country)
-            WHERE c.name IN [$actor, $target]
+            WHERE coalesce(other.population_m, 0) >= 1 AND c.name IN [$actor, $target]
               AND r.year = $year AND r.dependency >= 0.08
               AND other.name <> $actor AND other.name <> $target
             RETURN other.name AS country,

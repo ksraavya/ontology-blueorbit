@@ -5,6 +5,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from common.db import Neo4jConnection
+from common.entity_mapper import normalize_entity
 
 REGION_DATA = {
     "South Asia": [
@@ -55,45 +56,49 @@ REGION_DATA = {
     ]
 }
 
+# Full memberships as of 2026 (names are normalised before writing, so
+# common spellings are fine). Earlier lists were partial (NATO had 20 of 32,
+# the African Union 9 of 55), which skewed every alliance scenario.
 ALLIANCE_DATA = {
     "NATO": [
-        "United States", "United Kingdom", "France", "Germany",
-        "Italy", "Spain", "Canada", "Norway", "Denmark",
-        "Netherlands", "Belgium", "Portugal", "Poland",
-        "Romania", "Bulgaria", "Hungary", "Czechia", "Slovakia",
-        "Finland", "Sweden"
+        "Albania", "Belgium", "Bulgaria", "Canada", "Croatia", "Czechia", "Denmark",
+        "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Iceland",
+        "Italy", "Latvia", "Lithuania", "Luxembourg", "Montenegro", "Netherlands",
+        "North Macedonia", "Norway", "Poland", "Portugal", "Romania", "Slovakia",
+        "Slovenia", "Spain", "Sweden", "Turkey", "United Kingdom", "United States",
     ],
     "BRICS": [
-        "Brazil", "Russian Federation", "India", "China",
-        "South Africa", "Egypt", "Ethiopia", "Iran",
-        "United Arab Emirates"
+        "Brazil", "Russia", "India", "China", "South Africa", "Egypt", "Ethiopia",
+        "Iran", "United Arab Emirates", "Indonesia",
     ],
     "SCO": [
-        "China", "Russian Federation", "India", "Pakistan",
-        "Kazakhstan", "Uzbekistan", "Kyrgyzstan", "Tajikistan",
-        "Iran"
+        "China", "Russia", "India", "Pakistan", "Kazakhstan", "Kyrgyzstan",
+        "Tajikistan", "Uzbekistan", "Iran", "Belarus",
     ],
-    "QUAD": [
-        "United States", "India", "Japan", "Australia"
-    ],
+    "QUAD": ["United States", "India", "Japan", "Australia"],
     "ASEAN": [
-        "Indonesia", "Malaysia", "Philippines", "Singapore",
-        "Thailand", "Vietnam", "Myanmar", "Cambodia"
+        "Brunei", "Cambodia", "Indonesia", "Laos", "Malaysia", "Myanmar",
+        "Philippines", "Singapore", "Thailand", "Vietnam", "Timor-Leste",
     ],
     "African Union": [
-        "Ethiopia", "Nigeria", "South Africa", "Kenya",
-        "Egypt", "Algeria", "Morocco", "Ghana", "Tanzania"
+        "Algeria", "Angola", "Benin", "Botswana", "Burkina Faso", "Burundi",
+        "Cabo Verde", "Cameroon", "Central African Republic", "Chad", "Comoros",
+        "Congo", "Democratic Republic of the Congo", "Djibouti", "Egypt",
+        "Equatorial Guinea", "Eritrea", "Eswatini", "Ethiopia", "Gabon", "Gambia",
+        "Ghana", "Guinea", "Guinea-Bissau", "Ivory Coast", "Kenya", "Lesotho",
+        "Liberia", "Libya", "Madagascar", "Malawi", "Mali", "Mauritania",
+        "Mauritius", "Morocco", "Mozambique", "Namibia", "Niger", "Nigeria",
+        "Rwanda", "Sao Tome and Principe", "Senegal", "Seychelles", "Sierra Leone",
+        "Somalia", "South Africa", "South Sudan", "Sudan", "Tanzania", "Togo",
+        "Tunisia", "Uganda", "Zambia", "Zimbabwe", "Western Sahara",
     ],
     "Arab League": [
-        "Egypt", "Saudi Arabia", "Iraq", "Syria", "Jordan",
-        "Lebanon", "Libya", "Yemen", "Algeria", "Morocco",
-        "Tunisia", "Kuwait", "United Arab Emirates", "Qatar",
-        "Bahrain", "Oman"
+        "Algeria", "Bahrain", "Comoros", "Djibouti", "Egypt", "Iraq", "Jordan",
+        "Kuwait", "Lebanon", "Libya", "Mauritania", "Morocco", "Oman", "Palestine",
+        "Qatar", "Saudi Arabia", "Somalia", "Sudan", "Syria", "Tunisia",
+        "United Arab Emirates", "Yemen",
     ],
-    "CSTO": [
-        "Russian Federation", "Belarus", "Kazakhstan",
-        "Kyrgyzstan", "Tajikistan", "Armenia"
-    ]
+    "CSTO": ["Russia", "Belarus", "Kazakhstan", "Kyrgyzstan", "Tajikistan", "Armenia"],
 }
 
 def insert_regions():
@@ -102,7 +107,7 @@ def insert_regions():
     conn = None
     try:
         rows = [
-            {"region": region, "country": country}
+            {"region": region, "country": normalize_entity(country)}
             for region, countries in REGION_DATA.items()
             for country in countries
         ]
@@ -129,7 +134,7 @@ def insert_alliances():
     conn = None
     try:
         rows = [
-            {"alliance": alliance, "country": country}
+            {"alliance": alliance, "country": normalize_entity(country)}
             for alliance, countries in ALLIANCE_DATA.items()
             for country in countries
         ]

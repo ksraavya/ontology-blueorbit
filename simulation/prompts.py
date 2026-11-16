@@ -150,6 +150,30 @@ Query: "What if there is a major earthquake in Japan?"
   "extra_params": {"disaster_type": "earthquake"}
 }
 
+Query: "What if Russia stops all its arms exports?"
+(arms_embargo with ONLY an actor = the supplier cuts off every buyer)
+{
+  "scenario_type": "arms_embargo",
+  "actor": "Russian Federation",
+  "target": null,
+  "third_parties": [],
+  "magnitude": 1.0,
+  "year": 2024,
+  "extra_params": {"mode": "supplier_cutoff"}
+}
+
+## COMPOUND QUESTIONS
+If the query describes two or more separate events, return them as a list
+(maximum 3), one object per event, in the order mentioned:
+
+Query: "What if Russia stops its arms exports and the US economy collapses?"
+{
+  "scenarios": [
+    {"scenario_type": "arms_embargo", "actor": "Russian Federation", "target": null, "third_parties": [], "magnitude": 1.0, "year": 2024, "extra_params": {"mode": "supplier_cutoff"}},
+    {"scenario_type": "gdp_shock", "actor": null, "target": "United States", "third_parties": [], "magnitude": 1.5, "year": 2024, "extra_params": {"direction": "contraction"}}
+  ]
+}
+
 If the query does not match any scenario type, return:
 {
   "scenario_type": "unknown",

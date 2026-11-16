@@ -15,6 +15,11 @@ from simulation.models import (
 
 logger = logging.getLogger(__name__)
 
+# Smallest spillover delta reported as a cascade. Was 0.01, which filtered
+# out typical third-country effects (paper Table 10: dependency 0.25 gives
+# +0.0075). 0.005 keeps those while still dropping noise.
+CASCADE_MIN_DELTA = 0.005
+
 
 def _run(conn: Neo4jConnection, query: str, params: dict | None = None) -> list[dict]:
     return conn.run_query(query, params or {})
@@ -120,7 +125,7 @@ def run_gdp_shock(req: ScenarioRequest) -> ScenarioResult:
         # Trade partner cascade
         partner_rows = _run(conn, """
             MATCH (other:Country)-[r:HAS_TRADE_DEPENDENCY_ON]->(c:Country {name: $target})
-            WHERE r.year = $year AND r.dependency >= 0.08
+            WHERE coalesce(other.population_m, 0) >= 1 AND r.year = $year AND r.dependency >= 0.08
             RETURN other.name AS country,
                    r.dependency AS dependency,
                    other.trade_vulnerability_score AS trade_vuln
@@ -135,7 +140,7 @@ def run_gdp_shock(req: ScenarioRequest) -> ScenarioResult:
                 continue
             dep   = float(row.get("dependency") or 0.0)
             spill = clamp(dep * abs(econ_power_delta) * 0.4)
-            if spill < 0.01:
+            if spill < CASCADE_MIN_DELTA:
                 continue
             partner_affected.append(AffectedCountry(
                 country=country,
@@ -435,7 +440,7 @@ def run_export_ban(req: ScenarioRequest) -> ScenarioResult:
         # Other countries that also rely on this commodity from actor
         other_importers = _run(conn, """
             MATCH (other:Country)-[r:HAS_TRADE_DEPENDENCY_ON]->(a:Country {name: $actor})
-            WHERE r.year = $year AND r.dependency >= 0.10 AND other.name <> $target
+            WHERE coalesce(other.population_m, 0) >= 1 AND r.year = $year AND r.dependency >= 0.10 AND other.name <> $target
             RETURN other.name AS country,
                    r.dependency AS dependency,
                    other.trade_vulnerability_score AS trade_vuln

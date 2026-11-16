@@ -5,6 +5,10 @@ from typing import Any
 
 from common.db import Neo4jConnection
 from common.intelligence.normalization import clamp
+from simulation.calibration import (
+    ACTOR_DAMPING, CASCADE_DAMPING, K_ENERGY_DEP, K_INFLUENCE, K_RISK, K_TRADE, MIN_CASCADE_EXPOSURE,
+    exposure_delta, gdp_usd, max_severity, severity_from_exposure, share,
+)
 from simulation.models import (
     AffectedCountry,
     CascadeEffect,
@@ -15,6 +19,11 @@ from simulation.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Smallest spillover delta reported as a cascade. Was 0.01, which filtered
+# out typical third-country effects (paper Table 10: dependency 0.25 gives
+# +0.0075). 0.005 keeps those while still dropping noise.
+CASCADE_MIN_DELTA = 0.005
 
 
 def _run(conn: Neo4jConnection, query: str, params: dict | None = None) -> list[dict]:
@@ -112,19 +121,24 @@ def run_sanctions(req: ScenarioRequest) -> ScenarioResult:
         """, {"name": actor})
         as_ = actor_scores[0] if actor_scores else {}
 
-        # ── 4. Compute deltas ─────────────────────────────────────────────
-        # Target: trade vulnerability rises proportional to actor's trade share
-        target_trade_delta   = clamp(actor_share * 0.3 * mag)
-        target_econ_delta    = -clamp(actor_share * 0.25 * mag)
-        target_risk_delta    = clamp(actor_share * 0.2 * mag)
+        # ── 4. Compute deltas: exposure = trade at risk / GDP ────────────
+        # (simulation/calibration.py). The same $ shock matters far more to a
+        # small economy than to a large one; the old version used the share
+        # of total trade, which under-rated big shocks to big economies.
+        target_gdp = gdp_usd(conn, target)
+        actor_gdp = gdp_usd(conn, actor)
+        exp_t = share(bilateral_value, target_gdp)
+        exp_a = share(bilateral_value, actor_gdp) * ACTOR_DAMPING
 
-        # Actor: minor vulnerability increase (retaliation risk)
-        actor_trade_delta    = clamp(actor_share * 0.05 * mag)
+        target_trade_delta   = exposure_delta(exp_t, K_TRADE, mag)
+        target_econ_delta    = -exposure_delta(exp_t, K_INFLUENCE, mag)
+        target_risk_delta    = exposure_delta(exp_t, K_RISK, mag)
+        actor_trade_delta    = exposure_delta(exp_a, K_TRADE, mag)
 
         target_affected = AffectedCountry(
             country=target,
             impact_type="direct",
-            severity=_severity(actor_share * mag),
+            severity=severity_from_exposure(exp_t * mag),
             score_deltas=[
                 _make_delta("trade_vulnerability_score", ts.get("trade_vuln"), target_trade_delta),
                 _make_delta("economic_influence_score",  ts.get("econ_influence"), target_econ_delta),
@@ -134,32 +148,33 @@ def run_sanctions(req: ScenarioRequest) -> ScenarioResult:
             summary=(
                 f"{target} loses access to {actor} market; "
                 f"bilateral trade value ~${bilateral_value/1e9:.1f}B at risk "
-                f"({actor_share*100:.1f}% of total trade)."
+                f"({actor_share*100:.1f}% of its total trade, {exp_t*100:.2f}% of its GDP)."
             ),
         )
 
         actor_affected = AffectedCountry(
             country=actor,
             impact_type="direct",
-            severity="low",
+            severity=severity_from_exposure(exp_a * mag),
             score_deltas=[
                 _make_delta("trade_vulnerability_score", as_.get("trade_vuln"), actor_trade_delta, 0.6),
             ],
-            exposure_usd=bilateral_value * 0.3,
+            exposure_usd=bilateral_value,
             summary=(
-                f"{actor} faces minor retaliation risk and loses "
-                f"~${bilateral_value*0.3/1e9:.1f}B in bilateral trade exposure."
+                f"{actor} gives up ~${bilateral_value/1e9:.1f}B of bilateral trade "
+                f"({share(bilateral_value, actor_gdp)*100:.2f}% of its GDP; damped as the imposing side)."
             ),
         )
 
         # ── 5. Third-country cascade — who else depends on target? ────────
         cascade_rows = _run(conn, """
             MATCH (other:Country)-[r:HAS_TRADE_DEPENDENCY_ON]->(t:Country {name: $target})
-            WHERE r.year = $year AND r.dependency >= 0.1 AND other.name <> $actor
+            WHERE coalesce(other.population_m, 0) >= 1 AND r.year = $year AND r.dependency >= 0.1 AND other.name <> $actor
             RETURN other.name AS country,
                    r.dependency AS dependency,
                    other.trade_vulnerability_score AS trade_vuln,
-                   other.economic_influence_score  AS econ_influence
+                   other.economic_influence_score  AS econ_influence,
+                   other.trade_pct_gdp AS trade_pct_gdp
             ORDER BY r.dependency DESC
             LIMIT 8
         """, {"target": target, "year": year, "actor": actor})
@@ -167,13 +182,17 @@ def run_sanctions(req: ScenarioRequest) -> ScenarioResult:
         cascade_countries: list[AffectedCountry] = []
         for row in cascade_rows:
             dep = float(row.get("dependency") or 0.0)
-            spill = clamp(dep * target_trade_delta * 0.5)
-            if spill < 0.01:
+            # Spill-over exposure = share of its trade that is with the target
+            # x share of the target's trade being disrupted x its trade/GDP.
+            trade_pct = float(row.get("trade_pct_gdp") or 50.0) / 100.0
+            spill_exposure = dep * actor_share * trade_pct * CASCADE_DAMPING
+            spill = exposure_delta(spill_exposure, K_TRADE, mag)
+            if spill_exposure * mag < MIN_CASCADE_EXPOSURE:
                 continue
             cascade_countries.append(AffectedCountry(
                 country=row["country"],
                 impact_type="cascade",
-                severity=_severity(spill),
+                severity=severity_from_exposure(spill_exposure * mag),
                 score_deltas=[
                     _make_delta("trade_vulnerability_score", row.get("trade_vuln"), spill, 0.6),
                 ],
@@ -188,7 +207,7 @@ def run_sanctions(req: ScenarioRequest) -> ScenarioResult:
             CascadeEffect(
                 mechanism="Trade flow disruption",
                 affected=target,
-                severity=_severity(actor_share * mag),
+                severity=severity_from_exposure(exp_t * mag),
                 description=(
                     f"Bilateral trade of ~${bilateral_value/1e9:.1f}B halts; "
                     f"{target} must find alternative export markets."

@@ -228,7 +228,8 @@ def transform_sanctions_data(rows: list[dict]) -> list[dict]:
     """
     out: list[dict] = []
     seen: set[tuple] = set()
- 
+    counts: dict[tuple, int] = {}
+
     for row in rows:
         sanctioned = row.get("sanctioned_country")
         sanctioning = row.get("sanctioning_country")
@@ -250,16 +251,22 @@ def transform_sanctions_data(rows: list[dict]) -> list[dict]:
  
         # Deduplicate — we want one edge per country pair, not per entity
         pair_key = (sanctioning_n, sanctioned_n)
+        # Count designated entities per pair (sanctions intensity)
         if pair_key in seen:
+            counts[pair_key] += 1
             continue
         seen.add(pair_key)
- 
+        counts[pair_key] = 1
+
         out.append({
             "sanctioning_country": sanctioning_n,
             "sanctioned_country":  sanctioned_n,
             "source":              row.get("source", "OFAC SDN"),
         })
- 
+
+    for rec in out:
+        rec["entity_count"] = counts[(rec["sanctioning_country"], rec["sanctioned_country"])]
+
     logger.info(
         "transform_sanctions_data: input=%d output=%d unique_pairs",
         len(rows), len(out),
